@@ -1,0 +1,10 @@
+# 白名单：本仓库只存档 python 引擎源码
+/*
+!/.gitignore
+!/python/
+/python/*
+!/python/*.py
+
+# 缓存与本地杂物
+__pycache__/
+*.pyc
