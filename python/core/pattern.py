@@ -12,7 +12,7 @@
 # 版本开关：USE_SUBCLASS = True（152 子类，当前实现）/ False（去 4 低配，未实现）
 # ============================================================
 
-from utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board, cell_state
+from .utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board, cell_state
 
 USE_SUBCLASS = True  # TODO: 版本开关，去 4 低配版时改 False
 

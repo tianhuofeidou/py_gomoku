@@ -12,7 +12,7 @@
 #   目标：越靠终局越接近真实结果（折扣 γ）
 # ============================================================
 
-from utils import SIZE, EMPTY, BLACK, WHITE
+from .utils import SIZE, EMPTY, BLACK, WHITE
 
 GAMMA = 0.9          # TD 折扣因子（待调）
 HUMAN_WEIGHT = 5.0   # 人类对局样本加权

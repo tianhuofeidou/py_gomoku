@@ -19,10 +19,10 @@
 import sys
 import json
 
-from utils import SIZE, EMPTY, BLACK, WHITE
-from pattern import PatternAnalyzer
-from search import Search, SUBCLASS_NAMES, SUBCLASS_PARENT
-from deep_search import DeepSearch
+from .utils import SIZE, EMPTY, BLACK, WHITE
+from .pattern import PatternAnalyzer
+from .search import Search, SUBCLASS_NAMES, SUBCLASS_PARENT
+from .deep_search import DeepSearch
 
 
 class Engine:
@@ -83,7 +83,12 @@ class Engine:
                     if (rr, cc) not in pts or score > pts[(rr, cc)]:
                         pts[(rr, cc)] = score
             return self.deep_search.deep_search(board, pts, WHITE)
-        return self.deep_search.deep_search(board, self.search._fallback(board), WHITE)
+        # 无必杀兜底：AI 执白第一层候选按局势动态切换 4/3/2/1 攻防配比
+        return self.deep_search.deep_search(
+            board,
+            self.search._fallback(board, gear=self.search._choose_gear(board)),
+            WHITE,
+        )
 
     def _opening_candidates(self, board):
         """开局候选（固定逻辑，不进深度推演，返回候选【列表】给 agent 自行选）：
@@ -169,25 +174,29 @@ class Engine:
         elif my_vcf:
             cand = {'type': 'direct', 'reason': 'my-vcf', 'points': [(r, c) for (r, c) in my_vcf]}
         elif opp_vcf:
-            # 黑 VCF（活四/44/43）：对每个黑必杀点反推堵点（中心100 + 端80）
+            # 对方 VCF（活四/44/43）：对每个对方必杀点反推堵点（中心100 + 端80）
             pts = {}
             for (r, col) in opp_vcf:
-                for (rr, cc), s in self.search._defense_candidates(board, r, col, is_kill=True).items():
+                for (rr, cc), s in self.search._defense_candidates(board, r, col, is_kill=True, player=opp).items():
                     if (rr, cc) not in pts or s > pts[(rr, cc)]:
                         pts[(rr, cc)] = s
             cand = {'type': 'defense', 'reason': 'opp-vcf', 'points': pts}
         elif my_d33:
             cand = {'type': 'direct', 'reason': 'my-d33', 'points': [(r, c) for (r, c) in my_d33]}
         elif opp_d33:
-            # 黑双三：必杀点加搜索（对每个 d33 点反推堵法）
+            # 对方双三：必杀点加搜索（对每个 d33 点反推堵法）
             pts = {}
             for (r, col) in opp_d33:
-                for (rr, cc), s in self.search._defense_candidates(board, r, col, is_kill=True).items():
+                for (rr, cc), s in self.search._defense_candidates(board, r, col, is_kill=True, player=opp).items():
                     if (rr, cc) not in pts or s > pts[(rr, cc)]:
                         pts[(rr, cc)] = s
             cand = {'type': 'defense', 'reason': 'opp-d33', 'points': pts}
         else:
-            cand = {'type': 'fallback', 'reason': 'none', 'points': self.search._fallback(board)}
+            # 机机对战中黑白双方都可用动态配比；
+            # 深推内部仍用固定 3攻2防，保证搜索树稳定。
+            gear = self.search._choose_gear(board, player)
+            cand = {'type': 'fallback', 'reason': 'none',
+                    'points': self.search._fallback(board, gear=gear, player=player)}
         result['part3_candidates'] = cand
         # 4. 深度推演结果
         if cand['type'] == 'direct':

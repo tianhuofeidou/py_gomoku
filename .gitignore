@@ -4,7 +4,14 @@
 !/python/
 /python/*
 !/python/*.py
+!/python/*/
 
 # 缓存与本地杂物
 __pycache__/
 *.pyc
+
+# Training artifacts (not for repo): samples / logs / experimental models
+/python/data/nn_samples*.json
+/python/data/eval_rl50.log
+/python/nn/value_rl*.pt
+/python/nn/value_mixed.pt

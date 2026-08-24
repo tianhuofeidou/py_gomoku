@@ -11,8 +11,8 @@ import json
 import os
 import sys
 
-from utils import empty_board, place, BLACK, WHITE
-from engine import Engine
+from python.core.utils import empty_board, place, BLACK, WHITE
+from python.core.engine import Engine
 
 
 def data_file():

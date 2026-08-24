@@ -20,8 +20,8 @@
 #   段3（白落子后）：白落子影响区域               → 黑白两表都更新
 # ============================================================
 
-from utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board
-from pattern import PatternAnalyzer
+from .utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board
+from .pattern import PatternAnalyzer
 
 # 格子状态（全量哈希表，黑白分离）：
 #   1 = 进攻潜力巨大   2 = 有进攻潜力   3 = 没有进攻潜力
@@ -137,6 +137,38 @@ TYPE_SCORE = {
     5: 190, 6: 160, 7: 120, 8: 70,        # a1_bbb/bbc/bcc/ccc
     13: 120, 14: 90, 15: 60, 16: 30,      # b_bbb/bbc/bcc/ccc
 }
+
+# ============================================================
+# 动态攻防配比（无必杀兜底时使用）
+#   档位 1-4：4攻1防 / 3攻2防 / 2攻3防 / 1攻4防
+#   GEAR_ENABLED=False 时回退固定 3攻2防（深推内部 / 黑应手保持固定）
+#   压力只看 1 级(THREAT) 与 2 级(POTEN)，0 级由上层必杀判定单独处理；
+#   历史 0 级事件作为“杀势动量”参与档位切换。
+# ============================================================
+GEAR_ENABLED = True
+GEAR_PROFILE = {
+    1: (1, 4),   # 1攻4防
+    2: (2, 3),   # 2攻3防
+    3: (3, 2),   # 3攻2防
+    4: (4, 1),   # 4攻1防
+}
+DEFAULT_GEAR = 3
+
+# 子类区间（18 子类编号）
+A1_SUBCLASSES = (5, 6, 7, 8)     # a1 系：眠四/冲四
+A2_SUBCLASSES = (9, 10, 11, 12)  # a2 系：活三
+B_SUBCLASSES = (13, 14, 15, 16)  # b 系：眠三/活二
+
+# 压力权重：a1(冲四) > a2(活三) > b(潜力)
+GEAR_W_A1 = 4.0
+GEAR_W_A2 = 2.0
+GEAR_W_B = 0.5
+# 历史 0 级杀势动量权重（一次新杀势 ≈ 1.25 个冲四差）
+GEAR_W_ZERO = 5.0
+# 历史 0 级事件窗口（步数）
+GEAR_ZERO_WINDOW = 10
+# 档位阈值（score = 当前压力差 + 历史动量）
+GEAR_THRESHOLDS = (2.0, -1.0, -3.0)   # score>=t1→4档；t2<=score<t1→3档；t3<=score<t2→2档；score<t3→1档
 
 
 class SearchScope:
@@ -286,42 +318,75 @@ class Search:
         self.scope = SearchScope()            # 3 段影响区域计算
         self.sb = [[17] * SIZE for _ in range(SIZE)]   # 黑状态表（none=17）
         self.sw = [[17] * SIZE for _ in range(SIZE)]   # 白状态表
+        # 动态攻防配比状态：黑白各自独立，避免机机对战时互相污染
+        self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
+        # 历史 0 级事件用普通 list，窗口大小动态读 GEAR_ZERO_WINDOW（GA 可调）
+        self.zero_history = {BLACK: [], WHITE: []}
+        self.zero_active = {BLACK: False, WHITE: False}   # 防同一杀势连续多步重复计数
 
     # ---------- 3 段更新（增量刷新状态表） ----------
 
-    def on_move(self, board, r, c, player):
+    def on_move(self, board, r, c, player, journal=None, record_history=True):
         """任意方落子后的状态更新（增量，不重扫全盘）。
         先清落子点自身（已占格置 17 无用，防旧值残留），再按 3 段刷新受影响区域：
           - 黑落子 → 段1（更新黑表）+ 段2（更新白表）
           - 白落子 → 段3（黑白两表都更新）
+
+        journal：可选哈希表，记录本次更新中“首次被修改格子”的旧值，
+                 用于深推模拟后的状态表回滚。
+        record_history：是否记录历史 0 级/档位等真实对局状态；
+                        深推模拟时应传 False，避免污染真实历史。
         """
         # 落子点已占：双方状态表立即置无用。原因：落子点不在"邻域空位集合"内
         # （_neighborhood 只收集空位），靠段3区域刷不到自己，必须显式清除旧值。
-        self.sb[r][c] = 17
-        self.sw[r][c] = 17
+        self._write_state(self.sb, r, c, 17, journal)
+        self._write_state(self.sw, r, c, 17, journal)
         if player == BLACK:
             # 段1：黑最后一步定点区 + 黑状态区(必杀/威胁，空则潜力) → 更新黑表
             reg1 = self.scope.segment1_black(board, r, c, self.sb)
-            self._update(board, reg1, BLACK, self.sb)
+            self._update(board, reg1, BLACK, self.sb, journal)
             # 段2：段1黑影响区 + 白状态区 → 更新白表
             reg2 = self.scope.segment2_white(board, r, c, self.sb, self.sw)
-            self._update(board, reg2, WHITE, self.sw)
+            self._update(board, reg2, WHITE, self.sw, journal)
         else:
             # 段3：白落子影响区（含双方棋段延伸）→ 黑白两表都更新
             reg3 = self.scope.segment3_update(board, r, c, self.sb, self.sw)
-            self._update(board, reg3, BLACK, self.sb)
-            self._update(board, reg3, WHITE, self.sw)
+            self._update(board, reg3, BLACK, self.sb, journal)
+            self._update(board, reg3, WHITE, self.sw, journal)
+        # 记录“刚落子方是否新形成 0 级杀势”（同一杀势持续存在只计一次）
+        # 深推模拟不记录，避免假设棋步污染真实历史。
+        if record_history:
+            self._record_zero_event(board, player)
 
-    def _update(self, board, region, player, state):
+    def _write_state(self, state, r, c, new_val, journal=None):
+        """写状态表；若传入 journal，首次修改该格时记录旧值。"""
+        old = state[r][c]
+        if old == new_val:
+            return
+        if journal is not None:
+            key = (id(state), r, c)
+            if key not in journal:
+                journal[key] = old
+        state[r][c] = new_val
+
+    def restore(self, journal):
+        """恢复 journal 中记录的所有格子旧值（深推模拟后回滚状态表）。"""
+        for (sid, r, c), old in journal.items():
+            if sid == id(self.sb):
+                self.sb[r][c] = old
+            else:
+                self.sw[r][c] = old
+
+    def _update(self, board, region, player, state, journal=None):
         """对区域内每个空位模拟落子 → 18 子类编号 → 写回状态表。
         已占格一律置 17（none 无用）。"""
         for (r, c) in region:
             if not (0 <= r < SIZE and 0 <= c < SIZE):
                 continue
             if board[r][c] != EMPTY:
-                state[r][c] = 17          # 已占格 → 无用
+                self._write_state(state, r, c, 17, journal)   # 已占格 → 无用
                 continue
-            state[r][c] = self._eval(board, r, c, player)
+            self._write_state(state, r, c, self._eval(board, r, c, player), journal)
 
     # ---------- 单点评估（模拟落子 → 18 子类） ----------
 
@@ -412,22 +477,25 @@ class Search:
             'b_d33': pts(self.sb, (4,)),
         }
 
-    def _defense_candidates(self, board, r, c, is_kill=True):
-        """防守候选（带权重）——模拟落子反推必杀点 (r,c) 的堵法：
-        1. 临时模拟黑落 (r,c)，analyze_point 得各方向棋型记录
-        2. 中心 (r,c) = 100 分（is_kill=True，占掉黑落点即破坏杀型）或 60 分（活三）
+    def _defense_candidates(self, board, r, c, is_kill=True, player=BLACK):
+        """防守候选（带权重）——模拟落子反推必杀点 (r,c) 的堵法。
+        player 指定“被模拟落子的一方”（即对方威胁方）：
+          - 白方防守黑方威胁时 player=BLACK（默认，保持旧行为）
+          - 黑方防守白方威胁时 player=WHITE（机机对战对称）
+        1. 临时模拟 player 落 (r,c)，analyze_point 得各方向棋型记录
+        2. 中心 (r,c) = 100 分（is_kill=True，占掉落点即破坏杀型）或 60 分（活三）
         3. 对必杀级记录（LIVE4/SLEEP4/LIVE3）的每条线，按 l_edge/r_edge
            提取线端空位（类型 1/3/4 = 活端/半活端/断裂端）作为端点候选 = 80 分
-           （is_kill）或 60 分；再按 gap_location 提取缝（两个黑子之间的空位，
+           （is_kill）或 60 分；再按 gap_location 提取缝（两个 player 子之间的空位，
            xx_xx 中间格）作为候选，同样 = 80/60 分。数据与 scan_two 一致。
         返回 {(r, c): score}（score 用于深度推演的温度分配/排序）。
         """
         center_w = 100.0 if is_kill else 60.0
         end_w = 80.0 if is_kill else 60.0
         pts = {(r, c): center_w}
-        board[r][c] = BLACK
+        board[r][c] = player
         try:
-            recs = self.pattern.analyze_point(board, r, c, BLACK)
+            recs = self.pattern.analyze_point(board, r, c, player)
         finally:
             board[r][c] = EMPTY
         for rec in recs:
@@ -437,21 +505,21 @@ class Search:
             dr, dc = rec['dir']
             # ① 端点提取：每条线取两端空位，l_edge 用负方向(减)、r_edge 用正方向(加)，
             #    距离 d 与方向 (dr,dc) 结合得端空位坐标。
-            #    第一步过滤【有没有子】：d=1 = 端紧贴成形点、中间无黑子（无子方向，
-            #    如活四的外侧空端）→ 不提取；d>1 = 端跨过黑子链（有子方向）→ 提取。
+            #    第一步过滤【有没有子】：d=1 = 端紧贴成形点、中间无 player 子（无子方向，
+            #    如活四的外侧空端）→ 不提取；d>1 = 端跨过 player 子链（有子方向）→ 提取。
             #    第二步过滤【端类型】：与 pattern._classify 的 OPEN_END 一致 (1,3,4,5)
             #    1=活(__) 3=半活(_|) 4=断裂端(第二个_x) 5=延伸端(__x)
             for (d, t), sign in ((rec['l_edge'], -1), (rec['r_edge'], +1)):
                 if d <= 1:
-                    continue                # 无子方向：中间没有黑子，端无防守意义
+                    continue                # 无子方向：中间没有 player 子，端无防守意义
                 if t not in (1, 3, 4, 5):
                     continue
                 pr, pc = r + sign * d * dr, c + sign * d * dc   # 该端空位（紧贴段外）
                 if 0 <= pr < SIZE and 0 <= pc < SIZE and board[pr][pc] == EMPTY:
                     pts[(pr, pc)] = end_w
-            # ② gap 提取：缝 = 两个黑子之间的空位（xx_xx 的中间格）。
+            # ② gap 提取：缝 = 两个 player 子之间的空位（xx_xx 的中间格）。
             #    gap_location = 缝到基子的距离（0 = 无缝）。左右两侧都试，
-            #    验证缝两侧紧邻格都是黑子才确认是真缝（兼容双缝拆分的记录）。
+            #    验证缝两侧紧邻格都是 player 子才确认是真缝（兼容双缝拆分的记录）。
             gl = rec.get('gap_location') or 0
             if gl:
                 for sign in (-1, 1):
@@ -460,8 +528,8 @@ class Search:
                         continue
                     lr, lc = r + sign * (gl - 1) * dr, c + sign * (gl - 1) * dc
                     rr2, rc2 = r + sign * (gl + 1) * dr, c + sign * (gl + 1) * dc
-                    if (0 <= lr < SIZE and 0 <= lc < SIZE and board[lr][lc] == BLACK
-                            and 0 <= rr2 < SIZE and 0 <= rc2 < SIZE and board[rr2][rc2] == BLACK):
+                    if (0 <= lr < SIZE and 0 <= lc < SIZE and board[lr][lc] == player
+                            and 0 <= rr2 < SIZE and 0 <= rc2 < SIZE and board[rr2][rc2] == player):
                         pts[(pr, pc)] = end_w
         return pts
 
@@ -526,12 +594,137 @@ class Search:
         dual = self._dual_score(board, r, c)
         return (type_score + neighbor + dual) / SCORE_MAX * 100.0
 
-    def _fallback(self, board):
-        """兜底候选（无必杀时）：3 攻 + 2 防 = 5 个点，保证不重复。
+    # ---------- 动态攻防配比 ----------
+
+    def _count_subclasses(self, board, state, ids):
+        """统计状态表中属于 ids 子类集合的空位点数。"""
+        cnt = 0
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r][c] == EMPTY and state[r][c] in ids:
+                    cnt += 1
+        return cnt
+
+    def _pressure_stats(self, board, player=WHITE):
+        """当前压力统计（按 player 视角）：
+        返回 (my_a1, my_a2, my_b, opp_a1, opp_a2, opp_b)，
+        只统计空位；0 级必杀不参与（上层已单独处理）。"""
+        my_state = self.sw if player == WHITE else self.sb
+        opp_state = self.sb if player == WHITE else self.sw
+        my_a1 = self._count_subclasses(board, my_state, A1_SUBCLASSES)
+        my_a2 = self._count_subclasses(board, my_state, A2_SUBCLASSES)
+        my_b = self._count_subclasses(board, my_state, B_SUBCLASSES)
+        opp_a1 = self._count_subclasses(board, opp_state, A1_SUBCLASSES)
+        opp_a2 = self._count_subclasses(board, opp_state, A2_SUBCLASSES)
+        opp_b = self._count_subclasses(board, opp_state, B_SUBCLASSES)
+        return my_a1, my_a2, my_b, opp_a1, opp_a2, opp_b
+
+    def _zero_momentum(self, player=WHITE):
+        """历史 0 级杀势动量：窗口内‘新出现杀势’事件数之差（按 player 视角）。"""
+        return (sum(self.zero_history[player]) - sum(self.zero_history[3 - player])) * GEAR_W_ZERO
+
+    def _record_zero_event(self, board, player):
+        """落子后记录：刚落子方是否新形成 0 级杀势。
+        同一杀势若连续存在于多步，只在第一次出现时记 1 次。"""
+        state = self.sb if player == BLACK else self.sw
+        has_kill = any(board[r][c] == EMPTY and SUBCLASS_PARENT[state[r][c]] == KILL
+                       for r in range(SIZE) for c in range(SIZE))
+        if has_kill and not self.zero_active[player]:
+            self.zero_history[player].append(1)
+            # 动态窗口：GA 修改 GEAR_ZERO_WINDOW 后立即生效
+            if len(self.zero_history[player]) > GEAR_ZERO_WINDOW:
+                self.zero_history[player] = self.zero_history[player][-GEAR_ZERO_WINDOW:]
+            self.zero_active[player] = True
+        elif not has_kill:
+            self.zero_active[player] = False
+
+    def _target_gear(self, board, player=WHITE):
+        """纯计算目标攻防档位（不更新 self.gear，不滞回）。
+        用于深推上下文特征记录，避免污染真实档位状态。
+        返回 1-4；若 GEAR_ENABLED=False 返回 DEFAULT_GEAR。"""
+        if not GEAR_ENABLED:
+            return DEFAULT_GEAR
+
+        my_a1, my_a2, my_b, opp_a1, opp_a2, opp_b = self._pressure_stats(board, player)
+        if opp_a1 >= 2 and my_a1 == 0:
+            return 1
+        if my_a1 >= 2 and opp_a1 == 0:
+            return 4
+        if opp_a1 + opp_a2 >= 3 and my_a1 + my_a2 <= 1:
+            return 1
+        if my_a1 + my_a2 >= 3 and opp_a1 + opp_a2 <= 1:
+            return 4
+        my_pressure = my_a1 * GEAR_W_A1 + my_a2 * GEAR_W_A2 + my_b * GEAR_W_B
+        opp_pressure = opp_a1 * GEAR_W_A1 + opp_a2 * GEAR_W_A2 + opp_b * GEAR_W_B
+        score = (my_pressure - opp_pressure) + self._zero_momentum(player)
+        t1, t2, t3 = GEAR_THRESHOLDS
+        if score >= t1:
+            return 4
+        elif score >= t2:
+            return 3
+        elif score >= t3:
+            return 2
+        else:
+            return 1
+
+    def _choose_gear(self, board, player=WHITE):
+        """根据当前局势选择攻防档位（只应在双方都无 0 级时调用）。
+        规则：
+          1. 硬约束：对方双冲四且我方无冲四 → 1攻4防；我方双冲四且对方无 → 4攻1防。
+          2. 常规：score = 当前压力差 + 历史0级动量，按阈值映射四档。
+          3. 滞回：每次最多升/降一档，避免临界抖动。
+        player 指定视角（WHITE/BLACK），机机对战可让黑白都用动态配比。
+        返回档位 1-4。"""
+        if not GEAR_ENABLED:
+            self.gear[player] = DEFAULT_GEAR
+            return self.gear[player]
+
+        my_a1, my_a2, my_b, opp_a1, opp_a2, opp_b = self._pressure_stats(board, player)
+
+        # 硬约束（优先级最高，直接生效不等待滞回）
+        if opp_a1 >= 2 and my_a1 == 0:
+            self.gear[player] = 1
+            return self.gear[player]
+        if my_a1 >= 2 and opp_a1 == 0:
+            self.gear[player] = 4
+            return self.gear[player]
+        if opp_a1 + opp_a2 >= 3 and my_a1 + my_a2 <= 1:
+            self.gear[player] = 1
+            return self.gear[player]
+        if my_a1 + my_a2 >= 3 and opp_a1 + opp_a2 <= 1:
+            self.gear[player] = 4
+            return self.gear[player]
+
+        my_pressure = my_a1 * GEAR_W_A1 + my_a2 * GEAR_W_A2 + my_b * GEAR_W_B
+        opp_pressure = opp_a1 * GEAR_W_A1 + opp_a2 * GEAR_W_A2 + opp_b * GEAR_W_B
+        score = (my_pressure - opp_pressure) + self._zero_momentum(player)
+        t1, t2, t3 = GEAR_THRESHOLDS
+        if score >= t1:
+            target = 4
+        elif score >= t2:
+            target = 3
+        elif score >= t3:
+            target = 2
+        else:
+            target = 1
+
+        # 常规路径滞回：最多一次调一档（只影响当前 player 的档位）
+        if target > self.gear[player]:
+            self.gear[player] = min(4, self.gear[player] + 1)
+        elif target < self.gear[player]:
+            self.gear[player] = max(1, self.gear[player] - 1)
+        return self.gear[player]
+
+    def _fallback(self, board, gear=None, player=WHITE):
+        """兜底候选（无必杀时）：默认 3 攻 + 2 防 = 5 个点，保证不重复。
+        传入 gear 时按档位取 (攻, 防) 配比；gear=None 保持固定 3攻2防
+        （深推内部与黑应手继续用固定配比，保证搜索树稳定）。
+
+        player 指定“进攻方”视角：
+          - WHITE：白攻 TopN + 黑防 TopM（AI 执白的第一层候选）
+          - BLACK：黑攻 TopN + 白防 TopM（深推中黑方应手，对称）
         候选池 = 双方状态表中 威胁(1) ∪ 潜力(2) 的点。
-        进攻 = 白视角 Top3（攻防一体点用 dual 邻近权重，否则 attack）；
-        防守 = 黑视角 Top2（排除已进进攻的点，用 defend 邻近权重）。
-        排序键 = 综合分（棋型+邻近+攻防），平滑加权。"""
+        排序键 = 综合分（棋型+邻近+攻防一体），平滑加权。"""
         def top_pts(state, player, n, exclude=()):
             pts = [(r, c) for r in range(SIZE) for c in range(SIZE)
                    if board[r][c] == EMPTY and (r, c) not in exclude
@@ -541,9 +734,19 @@ class Search:
                 return self._candidate_score(board, p[0], p[1], player, mode)
             pts.sort(key=score, reverse=True)
             return pts[:n]
-        attack = top_pts(self.sw, WHITE, 3)
+        if gear is None:
+            attack_n, defend_n = GEAR_PROFILE[DEFAULT_GEAR]
+        else:
+            attack_n, defend_n = GEAR_PROFILE[gear]
+        if player == WHITE:
+            attack_state, attack_player = self.sw, WHITE
+            defend_state, defend_player = self.sb, BLACK
+        else:
+            attack_state, attack_player = self.sb, BLACK
+            defend_state, defend_player = self.sw, WHITE
+        attack = top_pts(attack_state, attack_player, attack_n)
         used = set(attack)
-        defend = top_pts(self.sb, BLACK, 2, exclude=used)
+        defend = top_pts(defend_state, defend_player, defend_n, exclude=used)
         return attack + defend
 
     # ---------- 状态描述 ----------
