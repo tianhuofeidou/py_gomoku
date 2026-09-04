@@ -1,0 +1,80 @@
+# -*- coding: utf-8 -*-
+"""引擎服务：封装核心引擎，对外提供规范化 AI 落子。
+
+与插件 adapter/server.py 的 compute_move 保持一致：
+  - 黑第一手 → 天元 (7,7)
+  - 白第二手 → 开局候选列表第一个
+  - 其余 → analyze_turn 深推选点
+返回 (row, col, ranked, net_used)。ranked 供界面展示全候选（按分降序）。
+"""
+import json
+import os
+
+from gomoku.core.utils import empty_board, place, BLACK, WHITE
+from gomoku.core.engine import Engine
+from gomoku.tools import ga_tune as G
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+_engine = None
+
+
+def load_ga_params():
+    """加载 GA 最优参数到正式引擎；找不到/损坏时静默回退默认。"""
+    path = os.path.join(ROOT, 'data', 'ga_best_params.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        params = data.get('params', data)
+        G.apply_params(G._fix_genome(params))
+    except Exception:
+        pass
+
+
+def get_engine(use_decision_net=False):
+    """单例引擎（默认纯算法，decision_net 关闭；GA 参数只加载一次）。"""
+    global _engine
+    if _engine is None:
+        load_ga_params()
+        _engine = Engine(use_decision_net=use_decision_net)
+    return _engine
+
+
+def ai_move(board, moves, player, engine=None):
+    """规范化 AI 落子。engine 可传入已与 board 同步的实例（界面用）；缺省用单例。
+
+    返回 (row, col, ranked, net_used)。
+    """
+    if engine is None:
+        engine = get_engine()
+
+    # 黑第一手：天元
+    if player == BLACK and len(moves) == 0:
+        return (7, 7), [], False
+
+    # 白第二手：开局候选列表取第一个
+    if player == WHITE and len(moves) == 1:
+        cand = engine.compute_move(board)
+        if isinstance(cand, list) and cand:
+            return (cand[0][0], cand[0][1]), [], False
+
+    res = engine.analyze_turn(board, player)
+    mv = res['part4_result']['move']
+    ranked = res['part4_result'].get('ranked') or []
+    net_used = len(ranked) >= 2 and engine.use_decision_net and engine.decision_net is not None
+
+    if isinstance(mv, list):
+        mv = mv[0] if mv else None
+    if mv is None:
+        r, c = 7, 7
+        if board[r][c] != 0:
+            for rr in range(15):
+                for cc in range(15):
+                    if board[rr][cc] == 0:
+                        r, c = rr, cc
+                        break
+                else:
+                    continue
+                break
+        return (r, c), ranked, net_used
+    return (mv[0], mv[1]), ranked, net_used
