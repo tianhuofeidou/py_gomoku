@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # engine.py —— 对外接口层（决策编排 + JSON 协议）
 # 职责：组装全部底层（pattern / search / deep_search），
 #       对外提供决策接口：
@@ -210,25 +210,41 @@ class Engine:
             cand = {'type': 'fallback', 'reason': 'none',
                     'points': self.search._fallback(board, gear=gear, player=player)}
         result['part3_candidates'] = cand
-        # 4. 深度推演结果（定稿规则：候选点不止一个就必须深推逐个打分、全返回+原始分；
-        #    唯一候选不深推，给超大分保证排最前）
+        # 4. 深度推演结果
+        #   绝对必杀（my-five/opp-five，落子即胜/必堵）→ 直取第一，不深推；
+        #   VCF/双三/defense/fallback → 深推逐个打分（ranked 全返回）。
+        #   注意两处重构修复：
+        #   a) defense 候选必须保留 dict 权重（100/80 驱动防守点推深）——9947a96
+        #      曾转 list 等权 60 → dt(60)=67>T0 → 防守深推浅化、乱选（黑弱根因）；
+        #   b) VCF/双三候选（列表无权重）补 100 权重——等权 60 同样推不动，
+        #      浅推会漏杀/犹豫；深推验证后再落子。
         pts = cand['points']
-        cand_list = list(pts.keys()) if isinstance(pts, dict) else list(pts)
-        if len(cand_list) == 1:
-            (r0, c0) = cand_list[0]
+        if cand['type'] == 'direct' and cand.get('reason') in ('my-five', 'opp-five'):
+            first = pts[0] if isinstance(pts, list) else next(iter(pts))
             result['part4_result'] = {
                 'type': 'direct',
-                'move': (r0, c0),
-                'ranked': [{'r': r0, 'c': c0, 'score': 1e9}],
+                'move': first,
+                'ranked': [{'r': first[0], 'c': first[1], 'score': 1e9}],
             }
         else:
-            ranked = self.deep_search.rank_candidates(board, cand_list, player)
-            best = ranked[0] if ranked else None
-            result['part4_result'] = {
-                'type': 'searched',
-                'move': (best['r'], best['c']) if best else None,
-                'ranked': ranked,
-            }
+            if cand['type'] == 'direct' and isinstance(pts, list):
+                # my-vcf / my-d33：列表候选补高权重，深推验证真杀
+                pts = {p: 100.0 for p in pts}
+            if isinstance(pts, dict) and len(pts) == 1:
+                (r0, c0) = next(iter(pts))
+                result['part4_result'] = {
+                    'type': 'direct',
+                    'move': (r0, c0),
+                    'ranked': [{'r': r0, 'c': c0, 'score': 1e9}],
+                }
+            else:
+                ranked = self.deep_search.rank_candidates(board, pts, player)
+                best = ranked[0] if ranked else None
+                result['part4_result'] = {
+                    'type': 'searched',
+                    'move': (best['r'], best['c']) if best else None,
+                    'ranked': ranked,
+                }
         # 决策网络选点（可选）：覆盖 move，ranked 全候选保持原样（供大模型/网络输入）
         if result['part4_result'].get('ranked'):
             mv = self._decision_pick(board, player, result['part4_result']['ranked'])

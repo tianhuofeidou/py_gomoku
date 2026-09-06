@@ -38,3 +38,18 @@ gomoku/nn/*.pt
 
 # 鏈湴瀛樺偍
 storages/
+
+gomoku/data/*.jsonl
+gomoku/data/ga_ckpt_v2.json
+gomoku/data/ga_deep_ckpt.json
+gomoku/data/ga_best_params_old.json
+
+# NN 实验（不维护，不入库）
+gomoku/nn/katago_net.py
+gomoku/tools/gen_a_samples.py
+gomoku/tools/train_a.py
+gomoku/tools/eval_a.py
+gomoku/tools/collect_game_samples.py
+gomoku/data/ga_best_v2.json
+gomoku/data/ga_best_params_ga2.json
+gomoku/data/ga_ckpt_v2.json

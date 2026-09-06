@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """自我对弈记账 + 训练采样器测试：
 1. SelfMemory.record_game：胜/负方视角两条记录、killType、winLine 正确；文件落盘可回读。
 2. loss_type_of：活四 / 冲四 / 跳四 / 其他。
@@ -103,9 +103,10 @@ class SelfMemoryTest(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    def test_default_path_under_dsh_home(self):
+    def test_default_path_under_gomoku_home(self):
+        """独立版数据根：默认 ~/.gomoku（GOMOKU_HOME 可覆盖）。"""
         p = default_self_memory_file()
-        self.assertTrue(p.endswith(os.path.join('storages', 'gomoku', 'self-memory.json')))
+        self.assertTrue(p.endswith(os.path.join('.gomoku', 'self-memory.json')))
 
 
 class SamplePoolTest(unittest.TestCase):
@@ -155,12 +156,12 @@ class DataRecordSelfTest(unittest.TestCase):
     def test_play_one_game_records(self):
         fd, path = tempfile.mkstemp(suffix='.json')
         os.close(fd)
-        os.unlink(path)   # 只借用目录位置，SelfMemory 会写 storages/gomoku/self-memory.json
+        os.unlink(path)   # 只借用目录位置，SelfMemory 会写 GOMOKU_HOME/self-memory.json
         try:
-            os.environ['DSH_HOME'] = os.path.dirname(path)
+            os.environ['GOMOKU_HOME'] = os.path.dirname(path)
             try:
-                nn_data.play_one_game(max_moves=8, t0=80.0, record_self=True)
-                sm_file = os.path.join(os.path.dirname(path), 'storages', 'gomoku', 'self-memory.json')
+                nn_data.play_one_game(max_moves=20, t0=80.0, record_self=True)
+                sm_file = os.path.join(os.path.dirname(path), 'self-memory.json')
                 self.assertTrue(os.path.exists(sm_file))
                 with open(sm_file, encoding='utf-8') as f:
                     data = json.load(f)
@@ -168,7 +169,7 @@ class DataRecordSelfTest(unittest.TestCase):
                 if data.get('selfGoodLines'):
                     self.assertEqual(len(data['selfGoodLines']), len(data['selfBadLines']))
             finally:
-                del os.environ['DSH_HOME']
+                del os.environ['GOMOKU_HOME']
         finally:
             if os.path.exists(path):
                 os.unlink(path)

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """插件统一落子接口：Node 端通过子进程调用本脚本。
 
 输入（stdin JSON）：
@@ -28,7 +28,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def load_ga_params():
-    """加载 GA 最优参数并应用到正式引擎；找不到/损坏时静默回退默认参数。"""
+    """加载 GA 最优参数并应用到正式引擎。
+    默认【不加载】（实测两轮 GA 参数均过拟合寻优开局，真实中盘局面
+    胜率低于默认占位参数：默认 67% vs GA 54-55%，24 真实开局评估）；
+    设置环境变量 DSH_GOMOKU_GA=1 才启用（实验用）。
+    找不到/损坏时静默回退默认参数。"""
+    if os.environ.get('DSH_GOMOKU_GA') != '1':
+        return
     path = os.path.join(ROOT, 'data', 'ga_best_params.json')
     try:
         with open(path, encoding='utf-8') as f:

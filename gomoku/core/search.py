@@ -588,14 +588,14 @@ class Search:
         b = SUBCLASS_PARENT[self.sb[r][c]] == THREAT
         return DUAL_BONUS if (w and b) else 0.0
 
-    def _candidate_score(self, board, r, c, player, mode, state=None):
+    def _candidate_score(self, board, r, c, player, mode):
         """候选点综合分（无必杀时平滑加权，不暴力分档），标准化到满分 100：
         分 = (棋型分 + 邻近归一×30 + 攻防一体) / 260 × 100
         棋型分覆盖威胁(1)与潜力(2)（无必杀时布局点也可入选）。
         三参数平滑融合：威胁为主，邻近/攻防作为加分，避免"只有威胁定生死"的暴力分层。
-        state：可选，指定棋型分查哪张状态表（默认按 player 查自家表）；
-              防守候选需要"查对方表的威胁分 + 用自家视角算邻近度"，两者颜色不同。"""
-        state = state if state is not None else (self.sw if player == WHITE else self.sb)
+        注：已回退"查表颜色与邻近视角分离"的修改（该修改导致引擎执黑时防守
+        名额不足、黑白失衡、GA 参数寻优失效；原逻辑黑白均衡）。"""
+        state = self.sw if player == WHITE else self.sb
         type_score = TYPE_SCORE.get(state[r][c], 0.0)
         neighbor = (self._neighbor_score(board, r, c, player, mode) / NEIGHBOR_NORM) * W_NEIGHBOR
         dual = self._dual_score(board, r, c)
@@ -786,14 +786,13 @@ class Search:
         候选池 = 双方状态表中 威胁(1) ∪ 潜力(2) 的点。
         排序键 = 综合分（棋型+邻近+攻防一体），平滑加权。"""
         syms = self._board_symmetries(board)
-        def top_pts(state, player, n, mode, exclude=(), scorer_state=None):
+        def top_pts(state, player, n, exclude=()):
             pts = [(r, c) for r in range(SIZE) for c in range(SIZE)
                    if board[r][c] == EMPTY and (r, c) not in exclude
                    and SUBCLASS_PARENT[state[r][c]] in (THREAT, POTEN)]
             def score(p):
-                m = 'dual' if self._dual_score(board, p[0], p[1]) > 0 else mode
-                return self._candidate_score(board, p[0], p[1], player, m,
-                                             state=scorer_state)
+                mode = 'dual' if self._dual_score(board, p[0], p[1]) > 0 else ('attack' if player == WHITE else 'defend')
+                return self._candidate_score(board, p[0], p[1], player, mode)
             pts.sort(key=score, reverse=True)
             # 等效去重：对称轨道（严格）/棋型签名（近似），每类取最高分代表，
             # 防止同类型点（对称镜像/同棋型近邻）占满名额、漏掉其他类型。
@@ -818,13 +817,12 @@ class Search:
         else:
             attack_state, attack_player = self.sb, BLACK
             defend_state, defend_player = self.sw, WHITE
-        # 攻候选：自家表棋型分 + 进攻邻近权重（自家×110 − 对家×10）
-        attack = top_pts(attack_state, attack_player, attack_n, 'attack')
+        # 攻防 mode 已回退到修复前逻辑（黑攻用 defend 权重贴白、白防用 attack
+        # 权重——歪打正着使引擎黑白均衡；修复版导致引擎执黑防守名额不足、
+        # 黑白失衡、GA 参数寻优失效）。等效去重保留。
+        attack = top_pts(attack_state, attack_player, attack_n)
         used = set(attack)
-        # 防候选：查对方表棋型分（该点对对方的威胁），邻近用自家视角
-        # （自家×30 + 对方×70：贴威胁点得分高）——player 与查表颜色分离
-        defend = top_pts(defend_state, player, defend_n, 'defend',
-                         exclude=used, scorer_state=defend_state)
+        defend = top_pts(defend_state, defend_player, defend_n, exclude=used)
         return attack + defend
 
     # ---------- 状态描述 ----------
