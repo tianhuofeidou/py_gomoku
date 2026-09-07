@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """五子棋 独立版 —— tkinter 游玩界面（零第三方依赖）。
 
 用法：
@@ -11,6 +11,8 @@
   - 悔棋 / 认输 / 求和 / 新对局
   - 对局结束立即可见；胜负自动写入全局记忆（totals/lossByType/badLines/goodLines）
 """
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -79,7 +81,8 @@ class GomokuApp:
         cv.delete('all')
         right = self.MARGIN + (self.SIZE - 1) * self.CELL
         for i in range(self.SIZE):
-            x, y = self._cell_xy(i, 0)
+            x, _ = self._cell_xy(0, i)      # 第 i 条竖线：x = MARGIN + i*CELL
+            _, y = self._cell_xy(i, 0)      # 第 i 条横线：y = MARGIN + i*CELL
             cv.create_line(x, self.MARGIN, x, right)
             cv.create_line(self.MARGIN, y, right, y)
         for i in range(self.SIZE):
@@ -125,13 +128,16 @@ class GomokuApp:
             self._log(res['error'])
             return
         self.last_move = (r, c)
+        who = '你' if game.mode == 'ai' else ('黑' if player == BLACK else '白')
+        self._log('【%s】落子 %s%d' % (who, COLUMNS[c], r + 1))
+        self._refresh()          # 先画上人类落子，棋盘立即更新
         self._after_move(ai_followup=True)
 
     def _vs_step(self):
         game = self.session.game
-        if game.mode != 'vs' or game.winner is not None:
+        if self.ai_thinking or game.mode != 'vs' or game.winner is not None:
             return
-        self._run_ai(lambda: self._do_ai_move(game.current_player()))
+        self._run_ai(lambda: self._ai_calc(game.current_player()))
 
     def _after_move(self, ai_followup):
         game = self.session.game
@@ -140,44 +146,92 @@ class GomokuApp:
             self._refresh()
             return
         if ai_followup and game.mode == 'ai' and game.current_player() == game.ai_player():
-            self._run_ai(lambda: self._do_ai_move(game.ai_player()))
+            self._run_ai(lambda: self._ai_calc(game.ai_player()))
         self._refresh()
 
-    def _do_ai_move(self, player):
+    def _ai_calc(self, player):
+        """AI 计算（在子线程执行，纯计算不碰 tkinter）。
+        返回 (player, (r,c), ranked, net_used, 耗时秒)；无棋可走返回 None。"""
         game = self.session.game
         if game.winner is not None:
-            return
-        try:
-            out = self.session.ai_play(player)
-            if not out:
-                return
-            (r, c), ranked, net_used = out
-            self.last_move = (r, c)
-            self._log('AI(%s) 落子 %s%d%s' % ('黑' if player == BLACK else '白',
-                                              COLUMNS[c], r + 1,
-                                              '  [决策网络]' if net_used else '  [纯算法]'))
-            if ranked and len(ranked) > 1:
-                self._log('候选：' + ' · '.join(self._rank_text(x) for x in ranked[:5]))
-        except Exception as e:
-            self._log('AI 计算失败：' + str(e))
-        self._refresh()
+            return None
+        t0 = time.perf_counter()
+        out = self.session.ai_play(player)
+        if not out:
+            return None
+        (r, c), ranked, net_used = out
+        return player, (r, c), ranked, net_used, time.perf_counter() - t0
 
     @staticmethod
-    def _rank_text(x):
-        return '%s%d(%.0f)' % (COLUMNS[x['c']], x['r'] + 1, x['score'])
+    def _fmt_score(s):
+        """分支分格式化：1e9 量级 = 必胜/必防直取；其余保留整数。"""
+        return '必胜' if s > 1e8 else ('%.0f' % s)
+
+    def _ai_apply(self, calc):
+        """AI 计算结果上屏（主线程）：落子标记 + 结构化候选打分。"""
+        player, (r, c), ranked, net_used, dt = calc
+        self.last_move = (r, c)
+        who = '黑' if player == BLACK else '白'
+        tag = ' [决策网络]' if net_used else ''
+        self._log('【%s】AI 思考 %.1fs → 落子 %s%d%s' % (who, dt, COLUMNS[c], r + 1, tag))
+        if ranked and len(ranked) > 1:
+            lines = []
+            for i, x in enumerate(ranked[:5]):
+                mark = '   ← 选中' if (x['r'], x['c']) == (r, c) else ''
+                lines.append('  %d. %s%d  分 %s%s' % (i + 1, COLUMNS[x['c']], x['r'] + 1,
+                                                      self._fmt_score(x['score']), mark))
+            self._log('候选打分：\n' + '\n'.join(lines))
 
     def _run_ai(self, fn):
+        """后台线程跑 AI（fn 为纯计算），主线程保持响应不冻结；
+        完成后回到主线程画盘收尾。思考期间点棋/按钮被 ai_thinking 保护拦下。"""
+        if self.ai_thinking:
+            return
         self.ai_thinking = True
         self.turn_label['text'] = '思考中…'
         self.root.update_idletasks()
-        try:
-            fn()
-        finally:
-            self.ai_thinking = False
+        box = {}
+
+        def worker():
+            try:
+                box['ok'] = fn()
+            except Exception as e:
+                box['err'] = e
+
+        def poll():
+            if 'err' in box:
+                self.ai_thinking = False
+                self._log('AI 计算失败：' + str(box['err']))
+                self._refresh()
+                return
+            if 'ok' in box:
+                self.ai_thinking = False
+                calc = box['ok']
+                if calc:
+                    self._ai_apply(calc)
+                self._refresh()
+                return
+            self.root.after(50, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(50, poll)
 
     # ---------- 控制 ----------
+    def _human_color(self, human_player=None):
+        """解析人类执子：接受字符串 'black'/'white' 或整数 BLACK/WHITE；
+        不传时尊重界面单选（hcolor_var）。
+        （旧写法把整数 BLACK(1) 与字符串 'black' 比较 → 恒判成 WHITE，
+         导致启动默认变成 AI 先手落子，棋盘开局非空。）"""
+        if human_player is None:
+            human_player = self.hcolor_var.get()
+        if isinstance(human_player, str):
+            return BLACK if human_player == 'black' else WHITE
+        return BLACK if human_player == BLACK else WHITE
+
     def _new_game(self, mode=None, human_player=None):
-        hp = BLACK if (human_player or 'black') == 'black' else WHITE
+        if self.ai_thinking:
+            return
+        hp = self._human_color(human_player)
         mode = mode or self.mode_var.get()
         self.session.reset(mode=mode, human_player=hp)
         self.last_move = None
@@ -185,13 +239,15 @@ class GomokuApp:
                                               '' if mode != 'ai' else '，AI=' + ('白' if hp == BLACK else '黑')))
         game = self.session.game
         if game.mode == 'ai' and game.current_player() == game.ai_player():
-            self._run_ai(lambda: self._do_ai_move(game.ai_player()))
+            self._run_ai(lambda: self._ai_calc(game.ai_player()))
         self._refresh()
 
     def _new_game_btn(self):
         self._new_game()
 
     def _undo(self):
+        if self.ai_thinking:
+            return
         game = self.session.game
         if game.mode == 'pvp':
             self.session.undo('last')
@@ -202,6 +258,8 @@ class GomokuApp:
         self._refresh()
 
     def _resign(self):
+        if self.ai_thinking:
+            return
         game = self.session.game
         if game.winner is not None:
             return
@@ -210,6 +268,8 @@ class GomokuApp:
         self._refresh()
 
     def _draw(self):
+        if self.ai_thinking:
+            return
         game = self.session.game
         if game.winner is not None:
             return
@@ -246,14 +306,6 @@ class GomokuApp:
             self.turn_label['text'] = '轮到 %s · %s' % (who, '黑' if g.current_player() == BLACK else '白')
         else:
             self.turn_label['text'] = '轮到 %s' % ('黑' if g.current_player() == BLACK else '白')
-        # 记忆提示（人机）
-        if g.mode == 'ai':
-            try:
-                hint = memory.memory_hint(g)
-                if hint:
-                    self._log('━━ 记忆 ━━\n' + hint)
-            except Exception:
-                pass
 
 
     def _show_memory(self):
