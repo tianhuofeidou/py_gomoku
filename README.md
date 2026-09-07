@@ -1,83 +1,150 @@
-﻿# Gomoku · 五子棋独立版（python 包已从插件抽出）
+# Gomoku · 纯 Python 五子棋引擎
 
-把原 `dsh-gomoku` 插件里的算法包（原 `python/`）抽出来，重命名为 **`gomoku`**，
-并补上独立的游玩界面与对局状态机/记忆，作为 **纯 Python 独立项目** 使用。
-（不再依赖 DeepSeek Harness / Node 插件层。）
+一个零第三方依赖的五子棋（Gomoku，15×15，黑先）**纯算法引擎**：图形界面、命令行对战、机机自弈一应俱全。核心引擎只用 Python 标准库——不装任何库就能跑、就能下棋。
+
+```
+难度来源：不是神经网络，而是「温度银行」驱动的深度推演——
+每一步把算力像花钱一样按「这手棋有多重要」分配，把关键分支推到底。
+```
 
 ---
 
 ## 快速开始
 
 ```bash
-# 图形界面（tkinter，零第三方依赖，推荐）
+# 图形界面（tkinter，Python 自带，推荐）
 python play.py
 
-# 命令行对战（终端也能玩）
+# 命令行对战（人类执黑，AI 执白；输入 h8 或 7,7，u=悔棋 q=退出）
 python play_cli.py
 
-# 机机对战（两个 AI 自对弈，可导棋谱）
+# 机机对战（两个 AI 自对弈）
 python -m gomoku.cli.vs_mode --max-moves 60 --out game.json
 ```
 
-核心引擎**纯算法零依赖**（仅标准库）。`tkinter` 为 Python 自带。
+界面支持：人机 / 人人 / 机机三种模式、人类执黑先手或执白后手、悔棋 / 认输 / 求和 / 新对局、对局记忆。AI 思考在后台线程执行，**思考期间界面不冻结**；每步落子后右侧面板展示候选打分（top5：坐标 + 分支分 + 选中标记）。
 
-### 可选强化棋力（装 torch/numpy）
+---
 
-```bash
-pip install numpy torch
+## 引擎是怎么思考的
+
+引擎分四层，自底向上：
+
+```
+pattern（棋型识别）→ search（候选生成）→ deep_search（温度银行深推）→ engine（决策流程）
 ```
 
-未安装时引擎自动回退纯算法，不会崩（`deep_search._nn_score` 与决策网络均有 try/except 回退）。
+### 1. pattern —— 棋型识别
+
+对盘面任意空位，**模拟该方落子**，沿四个方向扫描一条线（同色连子、缝、两端开口/堵死情况），把"落在这里会形成什么棋"归类为 18 种子类：
+
+| 层级 | 子类 | 含义 |
+|---|---|---|
+| 必杀（5 种） | `five` `live4` `d44` `d34` `d33` | 成五 / 活四 / 双眠四 / 眠四+活三 / 双活三 |
+| 威胁（8 种） | `a1_*`（眠四系）、`a2_*`（活三系） | 冲四、活三及各强弱档 |
+| 潜力（4 种） | `b_*` | 眠三、活二等 |
+| 无用 | `none` | — |
+
+状态表 `sb/sw` 为黑白双方各维护一张 15×15 子类表，落子时**增量更新**（只重算受影响区域），供候选与推演实时查询。
+
+### 2. search —— 候选生成
+
+轮到一方时，按威胁优先级取候选（命中即止）：
+
+1. `my-five`：有成五点 → 直接落子赢
+2. `opp-five`：对方有成五点 → 直接堵
+3. `my-vcf`：有活四 / 双眠四 / 眠四+活三 → 落必杀点
+4. `opp-vcf`：对方有上述杀 → 对每个必杀点**反推堵法**（落点中心权重 100、沿线端 80）
+5. `my-d33` / `opp-d33`：双活三同理
+6. 都没有 → `fallback`：动态攻防配比取点（见下）
+
+**动态攻防档位（gear 1~4）**：按双方"冲四×4 + 活三×2 + 眠三×0.5"的压力分差切换 4攻1防 ~ 1攻4防，落后防守、领先进攻。
+
+### 3. deep_search —— 温度银行深推
+
+这是核心。每手棋给一个**温度总预算 `T0=240`**，对每个候选点递归推演，模拟落子按候选权重扣温：
+
+```
+单步耗温  DT(w) = 400 × ((100 − w) / 100)² + 3      （w = 候选权重 0~100）
+```
+
+权重高的强手（冲四、活四成型点 w≈100）只耗 3 度 → **温度剩得多 → 推得深**；
+普通候选（w≈60）耗 67 度 → 浅推。温度耗尽即到达**叶子**，不再落子、直接评估局面：
+
+- 成五：±1000
+- 僵持：己方威胁步 +100 / 个，对方威胁步 −50 / 个，潜力步 +10
+- 每层双方各落一子；对方应手取**对己方最不利**的分支；已推序列缓存复用
+
+结果：**布局期能看 2~3 层（4~6 手），中盘缠斗 8~20 手，杀棋一路看到底**。单步耗时一般 1~6 秒（个别相持局面可达 10 秒+）。
+
+### 4. engine —— 决策流程
+
+`analyze_turn` 输出完整分析：双方威胁分布 → 候选类型 → 逐个深推打分 → 取分支分最高者落子。绝对必杀/唯一候选直接落子不推演；多个候选全部深推并**输出完整打分列表**（界面右侧面板可见）。
+
+> **可选神经网络**：安装 `numpy torch` 后可启用神经网络叶子评估/决策网络增强（实验性）。未安装或模型缺失时自动回退纯算法，不会崩。训练样本、模型权重不入库。
 
 ---
 
-## 功能（对照插件尽量还原）
+## 记忆系统
 
-| 功能 | 说明 |
+对局记录持久化到 `~/.gomoku/`（环境变量 `GOMOKU_HOME` 可覆盖）：
+
+- `games.json`：进行中的对局存档
+- `global-memory.json`：战绩（胜负平）、输棋类型统计（活四/冲四/跳四/双活三）、完整胜/败棋谱（`goodLines` / `badLines`）
+
+界面「查看记忆」可随时查看。
+
+---
+
+## 调参与评估工具
+
+| 工具 | 作用 |
 |---|---|
-| **三种模式** | 人机 `ai` / 人人 `pvp` / 机机 `vs` |
-| **换边** | 人机可人类执黑先手 或 白后手 |
-| **引擎落子** | 纯算法 + 可选决策网络；落子后展示推荐全候选（ranked） |
-| **悔棋 / 认输 / 求和** | `Game.exec/undo`，与插件语义一致 |
-| **新对局** | `Game.reset`，可带模式/换边/难度 |
-| **对局状态机** | 落子校验、胜负（成五）、满盘和棋、轮次、人/机方 |
-| **持久化** | 对局存档到 `~/.gomoku/games.json`（环境变量 `GOMOKU_HOME` 可覆盖） |
-| **全局记忆** | `totals`（胜负平）/ `lossByType`（活四/冲四/跳四/双活三/其他）/ `dualMem` / `badLines` / `goodLines`，含 8 变换对称归一化 |
-| **记忆提示** | GUI「查看记忆」/ CLI 对局结束后打印 memoryHint |
-| **大模型辅助** | `aiMode='llm'` 预留：本独立版未接 LLM，界面用 `engine` 模式 |
+| `gomoku/tools/eval_openings.py` | 24 个 KataGo 真实中盘开局批量评估，统计轮到方胜率（黑白轮换） |
+| `gomoku/tools/ga_tune.py` | 遗传算法调参：37 维基因（棋型分 24 + 攻防档位 8 + 温度 5） |
+| `gomoku/tools/bench_ga.py` `verify_ga.py` | GA 结果基准对比/验证 |
 
-> 注：插件专属的「LLM 决策」（`lib/server/decision.js`）与 React 前端（`lib/ui`）不在此独立版内；
-> 大模型下棋如需接入，可在 `service.ai_move` 处扩展为大模型推荐 + 引擎校验。
+> GA 参数**默认不加载**（实验证明其在固定开局上过拟合，真实中盘胜率反而不如默认参数）。如需启用：`DSH_GOMOKU_GA=1`。
 
 ---
 
-## 目录结构（独立版）
+## 目录结构
 
 ```
 gomoku/
-├── paths.py       存储路径（~/.gomoku，可 GOMOKU_HOME 覆盖）
-├── game.py        对局状态机（复刻插件 state.js）
-├── memory.py      全局记忆（复刻插件 memory.js，含对称归一化）
-├── service.py     引擎服务 + 规范化 AI 落子（含开局处理）
-├── session.py     对局会话（GUI/CLI 共用：状态机 + 同步引擎）
-├── core/          算法核心（engine / search / deep_search / pattern / evaluate / utils）
-├── nn/            神经网络（decision_net / model / features / 训练脚本；权重 .pt 不入库）
-├── adapter/       原 stdio 引擎接口（server / ai_move）
-├── cli/           命令行入口（vs_mode 机机对战 / decide_cli）
-├── tools/         训练与调参工具（ga_tune / katago_convert 等）
-├── data/          GA 最优参数 + 训练样本 json
-└── tests/         pytest
-play.py            tkinter 图形界面（根目录）
-play_cli.py        命令行对战（根目录）
-requirements.txt   依赖说明
-legacy_pseudocode.py  旧根目录扫描规则草稿（已改名保留）
+├── paths.py       存储路径（~/.gomoku）
+├── game.py        对局状态机（落子校验/胜负/轮次/悔棋/求和）
+├── memory.py      全局记忆（战绩/棋谱，含对称归一化）
+├── service.py     引擎服务 + 规范化 AI 落子（开局处理）
+├── session.py     对局会话（GUI/CLI 共用）
+├── core/          算法核心
+│   ├── pattern.py     棋型识别（18 子类）
+│   ├── search.py      候选生成（状态表/威胁检测/攻防档位）
+│   ├── deep_search.py 温度银行深推
+│   ├── engine.py      决策流程（analyze_turn）
+│   └── evaluate.py / utils.py
+├── nn/            神经网络实验（模型权重 .pt 不入库）
+├── cli/           vs_mode 机机对战 / decide_cli
+├── tools/         评估与调参工具
+├── data/          GA 最优参数、评估开局
+└── tests/         unittest（40 用例）
+play.py            tkinter 图形界面
+play_cli.py        命令行对战
+requirements.txt   依赖说明（核心零依赖，nn 可选）
 ```
+
+## 测试
+
+```bash
+python -m unittest gomoku.tests.test_gear gomoku.tests.test_rank_candidates \
+    gomoku.tests.test_deep_sync gomoku.tests.test_decision_net gomoku.tests.test_memory_train
+```
+
+## 已知局限
+
+- 对"连续冲四抢先手"（VCF）组合战术缺乏两步前瞻——对方两步先手逼应后的一子双杀，防守方可能来不及提前破坏交汇点
+- 叶子评估是启发式（威胁计数），不看厚势/空间等全局特征；神经网络增强是实验中的改进方向
 
 ---
 
-## 说明
-
-- 原 `python/` → `gomoku/`，所有 `from python.*` / `import python.*` / `python/nn/*.pt` 路径已同步改为 `gomoku.*`。
-- 引擎核心在 `gomoku/core`，`service.ai_move` 与插件 `adapter/server.py` 的开局逻辑一致（黑第一手天元、白第二手取开局候选）。
-- 训练/数据（`katago_data`、`nn_samples*.json` 等）仍在，独立版运行不需要，可按需清理。
-- **模型权重 `.pt` 不入库**：克隆后引擎默认走纯算法（缺权重自动回退）。需要神经网络增强时，把本地训练好的 `value.pt` / `decision.pt` 放回 `gomoku/nn/` 即可（或重新训练）。
+**License**: MIT（见 LICENSE）
