@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # ga_tune.py —— 遗传算法参数寻优（候选点评分 + 动态攻防配比 + 深推温度）
 #
 # 优化对象（monkey-patch 注入，零侵入）：
@@ -293,25 +293,44 @@ OPENINGS = [
     [(7, 7, BLACK), (7, 8, WHITE), (6, 6, BLACK), (8, 6, WHITE)],   # H8 H9 G7 G9
 ]
 
+# 真实中盘开局（24 个 KataGo 局面，子数 8-14；dict 形态 {board, to_move}）
+def _eval_openings():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'data', 'eval_openings.json')
+    if os.path.exists(path):
+        import json as _json
+        return _json.load(open(path, encoding='utf-8'))
+    return []
+
+EVAL_OPENINGS = _eval_openings()
+
 FAST_T0 = 40.0   # 评估温度：deep 组未参与时用（越高越准越慢）
 
-def play_game(params_black, params_white, opening, max_moves=30, use_fast_t0=True):
+def play_game(params_black, params_white, opening, max_moves=30, use_fast_t0=True, fast_t0=FAST_T0):
     """一场自对弈：黑用 params_black 参数、白用 params_white 参数。
+    opening 为 [(r,c,p)...] 列表（固定开局）或 {'board':..., 'to_move':...}（真实中盘）。
     返回 'B' / 'W' / None（僵持平局）。"""
     if use_fast_t0:
-        DeepSearch.T0 = FAST_T0
+        DeepSearch.T0 = fast_t0
     e = Engine()
     b = empty_board()
-    for r, c, p in opening:
-        place(b, r, c, p)
-        e.on_move(b, r, c, p)
-    turn = BLACK
+    if isinstance(opening, dict):
+        from gomoku.tools.eval_openings import rebuild_states
+        board, to_move = opening['board'], opening['to_move']
+        b = [row[:] for row in board]
+        rebuild_states(e.search, b)
+        turn = to_move
+    else:
+        for r, c, p in opening:
+            place(b, r, c, p)
+            e.on_move(b, r, c, p)
+        turn = BLACK
     for _ in range(max_moves):
         params = params_black if turn == BLACK else params_white
         apply_params(params)
         if use_fast_t0:
             # deep 组未参与寻优：固定用浅推温度加速评估
-            DeepSearch.T0 = FAST_T0
+            DeepSearch.T0 = fast_t0
         res = e.analyze_turn(b, turn)
         move = res['part4_result']['move']
         if move is None:
@@ -338,7 +357,8 @@ def evaluate_one(task):
         black_is_trial = (gi % 2 == 0)      # 黑白轮换
         pb = genome if black_is_trial else cfg['baseline']
         pw = cfg['baseline'] if black_is_trial else genome
-        w = play_game(pb, pw, opening, cfg['max_moves'], cfg.get('use_fast_t0', True))
+        w = play_game(pb, pw, opening, cfg['max_moves'], cfg.get('use_fast_t0', True),
+                      cfg.get('fast_t0', FAST_T0))
         if w == 'B' and black_is_trial:
             wins += 1.0
         elif w == 'W' and not black_is_trial:
@@ -417,6 +437,10 @@ def main():
     ap.add_argument('--max-moves', type=int, default=30, help='max moves per game')
     ap.add_argument('--ckpt', default='ga_ckpt.json', help='checkpoint file (per-generation save)')
     ap.add_argument('--resume', action='store_true', help='resume from checkpoint file')
+    ap.add_argument('--openings', default='fixed', choices=['fixed', 'eval'],
+                    help='fixed=3 个固定开局(旧) / eval=24 个真实中盘开局(防过拟合)')
+    ap.add_argument('--fast-t0', type=float, default=100.0,
+                    help='评估温度（deep 组未参与时用；默认 100，越接近正式 T0 越准越慢）')
     args = ap.parse_args()
 
     if args.groups:
@@ -427,13 +451,17 @@ def main():
     if unknown:
         ap.error('unknown groups: %s' % unknown)
 
+    openings = EVAL_OPENINGS if args.openings == 'eval' else OPENINGS
+    if not openings:
+        ap.error('--openings eval 需要 gomoku/data/eval_openings.json')
     rng = random.Random(args.seed)
     cfg = {
         'games': args.games,
-        'openings': OPENINGS,
+        'openings': openings,
         'baseline': BASELINE,
         'max_moves': args.max_moves,
         'use_fast_t0': True,
+        'fast_t0': args.fast_t0,
     }
     pop = args.pop
     gens = args.gens
