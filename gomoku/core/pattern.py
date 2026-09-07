@@ -39,6 +39,10 @@ class PatternAnalyzer:
         r_gap_count = 0
         l_gap_location = 0
         r_gap_location = 0
+        l_contig = 0          # 左/反向 首个缝前的连续子数（4连截断判定用）
+        r_contig = 0          # 右/正向 同上
+        l_gap_seen = False    # 本侧是否已遇到首个缝（连续段计数冻结）
+        r_gap_seen = False
 
         i = 1
         r_bull, r_gap = True, False
@@ -57,16 +61,24 @@ class PatternAnalyzer:
                 st = cell_state(board, rr, cr, player)
                 if st == 'stone':
                     stones += 1
+                    if not r_gap_seen:
+                        r_contig += 1
                     if r_gap:
                         r_gap_count += 1
                         if r_gap_location == 0:
                             r_gap_location = i - 1
                         r_gap = False
-                        if r_gap_count >= 2:
-                            # 第二个 _X：断裂端截断，该子不计入本段
+                        # 4连截断：落点连续段（两侧缝前子 + 落点）已≥4 时，
+                        # 缝外侧子不再并入本段——4连双活端已定，并入会把
+                        # 活四误判成带缝眠四（漏杀根因：C5_D6_E7F8G9H10 型）
+                        if r_gap_count >= 2 or (l_contig + r_contig + 1 >= 4):
                             r_edge[0] = i - 1
                             r_edge[1] = 4
-                            r_gap_count = 1
+                            if r_gap_count >= 2:
+                                r_gap_count = 1     # 第二缝：保留缝标记
+                            else:
+                                r_gap_count = 0     # 4连：缝并入活端，不再报 gap
+                                r_gap_location = 0
                             stones -= 1
                             r_bull = False
                 elif st == 'open':
@@ -78,6 +90,7 @@ class PatternAnalyzer:
                         r_edge[1] = 5 if st2 == 'stone' else 1
                     else:
                         r_gap = True
+                        r_gap_seen = True
                 else:  # close
                     r_bull = False
                     if r_gap:
@@ -94,15 +107,22 @@ class PatternAnalyzer:
                 st = cell_state(board, rl, cl, player)
                 if st == 'stone':
                     stones += 1
+                    if not l_gap_seen:
+                        l_contig += 1
                     if l_gap:
                         l_gap_count += 1
                         if l_gap_location == 0:
                             l_gap_location = i - 1
                         l_gap = False
-                        if l_gap_count >= 2:
+                        # 4连截断（与右侧对称，见上）
+                        if l_gap_count >= 2 or (l_contig + r_contig + 1 >= 4):
                             l_edge[0] = i - 1
                             l_edge[1] = 4
-                            l_gap_count = 1
+                            if l_gap_count >= 2:
+                                l_gap_count = 1     # 第二缝：保留缝标记
+                            else:
+                                l_gap_count = 0     # 4连：缝并入活端，不再报 gap
+                                l_gap_location = 0
                             stones -= 1
                             l_bull = False
                 elif st == 'open':
@@ -114,6 +134,7 @@ class PatternAnalyzer:
                         l_edge[1] = 5 if st2 == 'stone' else 1
                     else:
                         l_gap = True
+                        l_gap_seen = True
                 else:  # close
                     l_bull = False
                     if l_gap:
