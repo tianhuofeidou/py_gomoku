@@ -775,7 +775,7 @@ class Search:
             return ('sym', orbit)
         return ('pat', self._pattern_sig(board, r, c, player))
 
-    def _fallback(self, board, gear=None, player=WHITE):
+    def _fallback(self, board, gear=None, player=WHITE, with_score=False):
         """兜底候选（无必杀时）：默认 3 攻 + 2 防 = 5 个点，保证不重复。
         传入 gear 时按档位取 (攻, 防) 配比；gear=None 保持固定 3攻2防
         （深推内部与黑应手继续用固定配比，保证搜索树稳定）。
@@ -784,7 +784,10 @@ class Search:
           - WHITE：白攻 TopN + 黑防 TopM（AI 执白的第一层候选）
           - BLACK：黑攻 TopN + 白防 TopM（深推中黑方应手，对称）
         候选池 = 双方状态表中 威胁(1) ∪ 潜力(2) 的点。
-        排序键 = 综合分（棋型+邻近+攻防一体），平滑加权。"""
+        排序键 = 综合分（棋型+邻近+攻防一体），平滑加权。
+        with_score=True 时返回 [(r, c, score)]——分数即 _candidate_score
+        0~100 综合分，供温度银行按候选质量分配推演深度（原实现只用于
+        排序挑选、返回时丢弃，深推展开被硬编码 60，强弱点推得一样浅）。"""
         syms = self._board_symmetries(board)
         def top_pts(state, player, n, exclude=()):
             pts = [(r, c) for r in range(SIZE) for c in range(SIZE)
@@ -803,7 +806,10 @@ class Search:
                 if sig in seen:
                     continue
                 seen.add(sig)
-                chosen.append(p)
+                if with_score:
+                    chosen.append((p[0], p[1], score(p)))
+                else:
+                    chosen.append(p)
                 if len(chosen) >= n:
                     break
             return chosen
@@ -821,7 +827,7 @@ class Search:
         # 权重——歪打正着使引擎黑白均衡；修复版导致引擎执黑防守名额不足、
         # 黑白失衡、GA 参数寻优失效）。等效去重保留。
         attack = top_pts(attack_state, attack_player, attack_n)
-        used = set(attack)
+        used = set(p[:2] for p in attack)
         defend = top_pts(defend_state, defend_player, defend_n, exclude=used)
         return attack + defend
 

@@ -468,3 +468,51 @@ def memory_hint(g):
             if uniq:
                 lines.append('🚨 潜在线预警：' + '；'.join(uniq[:3]) + ' 与你上次的杀线重合，慎防重蹈覆辙')
     return '\n'.join(lines)
+
+
+# ============================================================
+# 记忆经验打分（A：落点经验修正——记忆参与候选点打分）
+# ============================================================
+# 统计历史棋谱（goodLines/badLines）中 AI 落点，8 对称归一化后：
+#   赢谱出现过的点 → 候选加分（重复好运）
+#   败谱出现过的点 → 候选减分（不重蹈覆辙）
+# engine.analyze_turn 的 fallback 候选打分时叠加该修正。
+
+MEM_W_WIN = 2.0     # 胜谱落点单次加分
+MEM_W_LOSE = -3.0   # 败谱落点单次减分（教训权重大于经验）
+MEM_ADJ_MAX = 15.0  # 单点修正幅度上限（防某点频次过高主导打分）
+
+
+def _canon_point(r, c):
+    """单点 8 对称归一化：8 个等价坐标中取字典序最小者。
+    使 (7,7) 周围对称等价位置共享同一经验计数。"""
+    best = (r, c)
+    for f in SYMMS:
+        k = f(r, c)
+        if k < best:
+            best = k
+    return best
+
+
+def move_memory_bonus():
+    """历史经验修正表 {(r, c): 修正分}（仅含非零项；无记忆/异常 → 空表）。
+    修正分 = 胜谱归一化频次×MEM_W_WIN + 败谱归一化频次×MEM_W_LOSE，clamp ±MEM_ADJ_MAX。"""
+    bonus = {}
+    try:
+        gm = global_memory()
+    except Exception:
+        return bonus
+    try:
+        for line in gm.get('goodLines') or []:
+            for m in line.get('ai') or []:
+                key = _canon_point(m['r'], m['c'])
+                bonus[key] = bonus.get(key, 0.0) + MEM_W_WIN
+        for line in gm.get('badLines') or []:
+            for m in line.get('ai') or []:
+                key = _canon_point(m['r'], m['c'])
+                bonus[key] = bonus.get(key, 0.0) + MEM_W_LOSE
+    except Exception:
+        return {}
+    for key in bonus:
+        bonus[key] = max(-MEM_ADJ_MAX, min(MEM_ADJ_MAX, bonus[key]))
+    return bonus

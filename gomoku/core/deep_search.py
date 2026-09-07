@@ -183,8 +183,11 @@ class DeepSearch:
             if c['b_d33']:
                 return [(r, col, 100.0) for (r, col) in c['b_d33'][:n]]
         # 兜底：3攻2防，视角与当前 player 对称（白攻+黑防 / 黑攻+白防）
-        fb = self.search._fallback(board, player=player)
-        w_lst = [(r, c, 60.0) for (r, c) in fb[:n]]
+        fb = self.search._fallback(board, player=player, with_score=True)
+        # 权重 = _candidate_score 真实综合分（0~100），温度银行按此分配深度：
+        # 强候选（落子成冲四/活三等先手点，分高）推得深，弱候选自动浅推。
+        # clamp 到 [1,100]：超 100 会让 dt=(100-w)^2 回升，温度非单调。
+        w_lst = [(r, c, min(max(float(w), 1.0), 100.0)) for (r, c, w) in fb[:n]]
         return w_lst
 
     def _make_ctx(self, board, player, main_player, w, cand_ws):

@@ -207,8 +207,17 @@ class Engine:
             # 机机对战中黑白双方都可用动态配比；
             # 深推内部仍用固定 3攻2防，保证搜索树稳定。
             gear = self.search._choose_gear(board, player)
-            cand = {'type': 'fallback', 'reason': 'none',
-                    'points': self.search._fallback(board, gear=gear, player=player)}
+            # fallback 候选带 _candidate_score 真实分（dict 形态），
+            # rank_candidates 按分分配温度：强候选（冲四/活三成型点）推深。
+            # 叠加记忆经验修正（move_memory_bonus）：历史赢谱落点加分、
+            # 败谱落点减分——记忆参与候选打分（8 对称归一化，见 memory.py）。
+            mem_bonus = self._memory_bonus()
+            pts = {}
+            for (rr, cc), s in [(p[:2], p[2]) for p in
+                                self.search._fallback(board, gear=gear, player=player, with_score=True)]:
+                if (rr, cc) not in pts or s > pts[(rr, cc)]:
+                    pts[(rr, cc)] = min(max(float(s) + mem_bonus.get((rr, cc), 0.0), 1.0), 100.0)
+            cand = {'type': 'fallback', 'reason': 'none', 'points': pts}
         result['part3_candidates'] = cand
         # 4. 深度推演结果
         #   绝对必杀（my-five/opp-five，落子即胜/必堵）→ 直取第一，不深推；
@@ -313,6 +322,16 @@ class Engine:
             except Exception:
                 self._memory = False
         return self._memory if self._memory else None
+
+    def _memory_bonus(self):
+        """历史经验修正表（memory.move_memory_bonus）：赢谱落点加分/败谱落点减分。
+        memory.global_memory 为进程内缓存（对局结束写入后自动最新），
+        每步重建成本 <1ms（遍历棋谱 ×8 对称变换），无需自缓存。"""
+        try:
+            from gomoku import memory as _mem
+            return _mem.move_memory_bonus()
+        except Exception:
+            return {}
 
     # ---------- 状态描述 ----------
 
