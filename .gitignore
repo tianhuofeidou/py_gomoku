@@ -66,3 +66,7 @@ gomoku/nn/sample_pool.py
 gomoku/nn/self_memory.py
 gomoku/tests/test_decision_net.py
 gomoku/tests/test_memory_train.py
+
+# 开发草稿（本地保留，不追踪）
+legacy_pseudocode.py
+
