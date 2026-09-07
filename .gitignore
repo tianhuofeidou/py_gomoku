@@ -34,7 +34,9 @@ gomoku/data/ga_ckpt.json
 gomoku/data/ga_deep_*.json
 
 # 模型权重（训练产物，不提交；引擎无权重时自动回退纯算法）
+# 例外：value.pt 为叶子评估正式模型，入库（GitHub 版开箱可用 NN 叶子）
 gomoku/nn/*.pt
+!gomoku/nn/value.pt
 
 # 本地存储
 storages/
@@ -44,7 +46,7 @@ gomoku/data/ga_ckpt_v2.json
 gomoku/data/ga_deep_ckpt.json
 gomoku/data/ga_best_params_old.json
 
-# NN ʵ�飨��ά��������⣩
+# NN 实验（本地保留，不追踪）
 gomoku/nn/katago_net.py
 gomoku/tools/gen_a_samples.py
 gomoku/tools/train_a.py
