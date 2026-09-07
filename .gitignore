@@ -55,3 +55,14 @@ gomoku/tools/collect_game_samples.py
 gomoku/data/ga_best_v2.json
 gomoku/data/ga_best_params_ga2.json
 gomoku/data/ga_ckpt_v2.json
+# 决策网络链（GitHub 版不带，本地实验保留）
+gomoku/nn/decision_net.py
+gomoku/nn/decision_input.py
+gomoku/nn/decision_data.py
+gomoku/nn/train_decision.py
+gomoku/nn/eval_decision.py
+gomoku/nn/memory_lookup.py
+gomoku/nn/sample_pool.py
+gomoku/nn/self_memory.py
+gomoku/tests/test_decision_net.py
+gomoku/tests/test_memory_train.py
