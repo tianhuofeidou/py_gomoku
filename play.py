@@ -19,8 +19,16 @@ from tkinter import ttk
 from gomoku.game import Game, SIZE, EMPTY, BLACK, WHITE, COLUMNS
 from gomoku import service, memory
 from gomoku.session import PlaySession
+from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
+
+# AI 棋力档位：(名称, 温度预算 T0, 说明)——玩家语言，不暴露温度概念
+TEMP_LEVELS = [
+    ('轻快', 160, '约 1s/手'),
+    ('标准', 240, '约 1~2s/手'),
+    ('认真', 320, '约 2~3s/手'),
+]
 
 
 class GomokuApp:
@@ -61,8 +69,17 @@ class GomokuApp:
                                           ('机机走一步', self._vs_step), ('查看记忆', self._show_memory)]):
             ttk.Button(panel, text=label, command=cmd).grid(row=10 + i, column=0, sticky='ew', pady=2)
 
+        # AI 棋力档位（温度银行预算映射；越高推演越深越慢，下一手生效）
+        ttk.Label(panel, text='AI 棋力').grid(row=16, column=0, sticky='w', pady=(10, 2))
+        cur = DeepSearch.T0
+        self.temp_var = tk.IntVar(value=min(TEMP_LEVELS, key=lambda x: abs(x[1] - cur))[1])
+        for i, (name, t0, note) in enumerate(TEMP_LEVELS):
+            ttk.Radiobutton(panel, text='%s（%s）' % (name, note), value=t0,
+                            variable=self.temp_var,
+                            command=self._on_temp_change).grid(row=17 + i, column=0, sticky='w')
+
         self.turn_label = ttk.Label(panel, text='', justify=tk.LEFT, wraplength=210)
-        self.turn_label.grid(row=17, column=0, sticky='w', pady=8)
+        self.turn_label.grid(row=21, column=0, sticky='w', pady=8)
 
         self.info = tk.Text(self.root, width=38, height=26, state=tk.DISABLED)
         self.info.pack(side=tk.LEFT, fill=tk.Y)
@@ -280,6 +297,11 @@ class GomokuApp:
     def _on_mode_change(self):
         hp = BLACK if self.hcolor_var.get() == 'black' else WHITE
         self._new_game(mode=self.mode_var.get(), human_player=hp)
+
+    # ---------- AI 棋力档位 ----------
+    def _on_temp_change(self):
+        """档位切换：更新温度银行预算（下一手生效）。"""
+        DeepSearch.T0 = float(self.temp_var.get())
 
     # ---------- 刷新 ----------
     def _log(self, text):
