@@ -19,6 +19,8 @@ class PlaySession:
         self.game = Game(human_player=human_player, mode=mode, ai_mode='engine')
         self.game.register(self.sid)
         self.engine = service.get_engine()
+        # 引擎为单例：换新对局必须全盘重建状态表，否则上一盘残留干扰检测
+        self.engine.search.rebuild_all(self.game.board())
 
     def place(self, r, c, player):
         res = self.game.place(r, c, player)
@@ -44,3 +46,6 @@ class PlaySession:
             self.game.undo_ai_move()
         else:
             self.game.undo_last_move()
+        # Game 层悔棋只回退 moves，引擎增量状态表不回退 →
+        # 全盘重建，否则幽灵子残留干扰后续候选/必杀检测（漏杀根因）
+        self.engine.search.rebuild_all(self.game.board())

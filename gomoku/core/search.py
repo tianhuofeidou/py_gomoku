@@ -395,6 +395,20 @@ class Search:
 
     # ---------- 单点评估（模拟落子 → 18 子类） ----------
 
+    def rebuild_all(self, board):
+        """全盘重建黑白状态表 + 清杀势历史。
+        悔棋 / 换新对局后调用：Game 层回退只动 moves，引擎增量状态表
+        与棋盘失步（幽灵子残留干扰后续检测/漏杀），需全盘重算。"""
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r][c] == EMPTY:
+                    self.sb[r][c] = self._eval(board, r, c, BLACK)
+                    self.sw[r][c] = self._eval(board, r, c, WHITE)
+                else:
+                    self.sb[r][c] = 17
+                    self.sw[r][c] = 17
+        self.zero_history = {BLACK: [], WHITE: []}
+
     def _eval(self, board, r, c, player):
         """模拟 player 在 (r,c) 落子 → 18 子类编号 0-17。
         流程：

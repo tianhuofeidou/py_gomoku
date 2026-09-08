@@ -19,14 +19,7 @@ from gomoku.core.deep_search import DeepSearch
 
 def rebuild_states(search, board):
     """从静态局面全盘重建黑白状态表（无着法历史时的兜底）。"""
-    for r in range(SIZE):
-        for c in range(SIZE):
-            if board[r][c] == EMPTY:
-                search.sb[r][c] = search._eval(board, r, c, BLACK)
-                search.sw[r][c] = search._eval(board, r, c, WHITE)
-            else:
-                search.sb[r][c] = 17
-                search.sw[r][c] = 17
+    search.rebuild_all(board)
 
 
 def play_from(board, to_move, e_turn, e_opp, t0, max_moves=60):
