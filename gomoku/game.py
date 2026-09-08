@@ -154,13 +154,17 @@ class Game:
 
     # ---------- 悔棋 / 认输 / 求和 ----------
     def _rollback_solidify(self):
-        if self.solidified and self.solidify_info:
-            self.solidified = False
-            self.solidify_info = None
-        self.sid = None
+        if self.archived and self.history:
+            entry = self.history[-1]
+            if entry['moves'] == self.moves and entry['winner'] == self.winner:
+                from gomoku import memory
+                memory.rollback_result(entry.get('memoryReceipt'), entry)
+                self.history.pop()
+        self.archived = False
+        self.solidified = False
+        self.solidify_info = None
 
     def undo_human_move(self):
-        self._rollback_solidify()
         hp = self.human_player_()
         last = -1
         for i, m in enumerate(self.moves):
@@ -168,6 +172,7 @@ class Game:
                 last = i
         if last < 0:
             return
+        self._rollback_solidify()
         self.moves = self.moves[:last]
         self.winner = None
         self.seq += 1
@@ -175,7 +180,6 @@ class Game:
         self.persist()
 
     def undo_ai_move(self):
-        self._rollback_solidify()
         ai = self.ai_player()
         last = -1
         for i, m in enumerate(self.moves):
@@ -183,6 +187,7 @@ class Game:
                 last = i
         if last < 0:
             return
+        self._rollback_solidify()
         self.moves = self.moves[:last]
         self.winner = None
         self.seq += 1
@@ -261,9 +266,10 @@ class Game:
             return
         self.archived = True
         # 记账闭环：胜负写入全局记忆（memo 里再 import，避免循环依赖）
+        receipt = None
         try:
             from gomoku import memory
-            memory.record_result(self)
+            receipt = memory.record_result(self)
         except Exception:
             pass
         self.history.append({
@@ -274,6 +280,7 @@ class Game:
             'mode': self.mode or 'ai',
             'startedAt': self.started_at,
             'endedAt': int(time.time() * 1000),
+            'memoryReceipt': receipt,
         })
         self._solidify()
         self.persist()

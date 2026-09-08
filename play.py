@@ -182,7 +182,7 @@ class GomokuApp:
     @staticmethod
     def _fmt_score(s):
         """分支分格式化：1e9 量级 = 必胜/必防直取；其余保留整数。"""
-        return '必胜' if s > 1e8 else ('%.0f' % s)
+        return '直取' if s > 1e8 else ('%.0f' % s)
 
     def _ai_apply(self, calc):
         """AI 计算结果上屏（主线程）：落子标记 + 结构化候选打分。"""

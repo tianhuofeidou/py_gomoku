@@ -2,7 +2,7 @@
 # search.py —— 搜索层（决策主流程 + 状态表维护）
 # 职责：
 #   1. 维护黑白状态表（全量 15×15，每格 18 子类编号 0-17）
-#   2. 落子后 3 段增量更新状态表（SearchScope 提供影响区域）
+#   2. 落子后更新完整四线的黑白棋型（精确增量更新）
 #   3. 候选点生成：按检测优先级分类（5连/活四/VCF/双三）+ 防守反推
 #   4. 无必杀时兜底：3攻2防（棋型分 + 邻近度 + 攻防一体 平滑评分）
 #
@@ -14,10 +14,8 @@
 #   子类 18 种：必杀5(five/live4/d44/d34/d33) + 威胁8(A1眠四系4+A2活三系4)
 #             + 潜力4(b系) + 无用1(none)
 #
-# 【3 段更新】（每次落子后增量刷新，只更新受影响区域）：
-#   段1（黑落子后）：黑最后一步定点区 + 黑状态区 → 更新黑表
-#   段2（黑落子后）：段1黑影响区 + 白状态区       → 更新白表
-#   段3（白落子后）：白落子影响区域               → 黑白两表都更新
+# 【精确增量更新】：只重算落子所在行、列、两条对角线。
+# SearchScope 保留旧范围接口，正式 on_move 不再依赖它的启发式边界。
 # ============================================================
 
 from .utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board
@@ -333,35 +331,28 @@ class Search:
 
     def on_move(self, board, r, c, player, journal=None, record_history=True):
         """任意方落子后的状态更新（增量，不重扫全盘）。
-        先清落子点自身（已占格置 17 无用，防旧值残留），再按 3 段刷新受影响区域：
-          - 黑落子 → 段1（更新黑表）+ 段2（更新白表）
-          - 白落子 → 段3（黑白两表都更新）
+        先清落子点自身，再重算四条直线上的空位（双方），覆盖长跳链。
 
         journal：可选哈希表，记录本次更新中“首次被修改格子”的旧值，
                  用于深推模拟后的状态表回滚。
         record_history：是否记录历史 0 级/档位等真实对局状态；
                         深推模拟时应传 False，避免污染真实历史。
         """
-        # 落子点已占：双方状态表立即置无用。原因：落子点不在"邻域空位集合"内
-        # （_neighborhood 只收集空位），靠段3区域刷不到自己，必须显式清除旧值。
+        # 落子点已占：双方状态表立即置无用，日志保留旧值供模拟回滚。
         self._write_state(self.sb, r, c, 17, journal)
         self._write_state(self.sw, r, c, 17, journal)
-        if player == BLACK:
-            # 段1：黑最后一步定点区 + 黑状态区(必杀/威胁，空则潜力) → 更新黑表
-            reg1 = self.scope.segment1_black(board, r, c, self.sb)
-            self._update(board, reg1, BLACK, self.sb, journal)
-            # 段2：段1黑影响区 + 白状态区 → 更新白表
-            reg2 = self.scope.segment2_white(board, r, c, self.sb, self.sw)
-            self._update(board, reg2, WHITE, self.sw, journal)
-        else:
-            # 段3：白落子影响区（含双方棋段延伸）→ 黑白两表都更新
-            reg3 = self.scope.segment3_update(board, r, c, self.sb, self.sw)
-            self._update(board, reg3, BLACK, self.sb, journal)
-            self._update(board, reg3, WHITE, self.sw, journal)
-        # 记录“刚落子方是否新形成 0 级杀势”（同一杀势持续存在只计一次）
+        # 一个点的棋型只依赖经过它的四条直线。刷新落子点的完整四线，
+        # 覆盖双空跳二及长跳链；固定半径/旧棋段边界会漏掉远端新潜力。
+        region = {(r + k * dr, c + k * dc)
+                  for dr, dc in DIRECTIONS for k in range(-SIZE + 1, SIZE)
+                  if in_board(r + k * dr, c + k * dc)}
+        self._update(board, region, BLACK, self.sb, journal)
+        self._update(board, region, WHITE, self.sw, journal)
+        # 每个真实棋步更新双方杀势及历史窗口，同一杀势持续存在只计一次。
         # 深推模拟不记录，避免假设棋步污染真实历史。
         if record_history:
-            self._record_zero_event(board, player)
+            self._record_zero_event(board, BLACK)
+            self._record_zero_event(board, WHITE)
 
     def _write_state(self, state, r, c, new_val, journal=None):
         """写状态表；若传入 journal，首次修改该格时记录旧值。"""
@@ -408,6 +399,8 @@ class Search:
                     self.sb[r][c] = 17
                     self.sw[r][c] = 17
         self.zero_history = {BLACK: [], WHITE: []}
+        self.zero_active = {BLACK: False, WHITE: False}
+        self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
 
     def _eval(self, board, r, c, player):
         """模拟 player 在 (r,c) 落子 → 18 子类编号 0-17。
@@ -495,6 +488,27 @@ class Search:
             'w_d33': pts(self.sw, (4,)),
             'b_d33': pts(self.sb, (4,)),
         }
+
+    def tactical_candidates(self, board, player):
+        """顶层与深推共用的强制攻防优先级；返回 (原因, 带权候选)。"""
+        c = self.candidates(board)
+        mine, other = ('b', 'w') if player == BLACK else ('w', 'b')
+        for owner, prefix, kind in (
+                ('my', mine, 'five'), ('opp', other, 'five'),
+                ('my', mine, 'vcf'), ('opp', other, 'vcf'),
+                ('my', mine, 'd33'), ('opp', other, 'd33')):
+            points = c[prefix + '_' + kind]
+            if not points:
+                continue
+            if owner == 'my' or kind == 'five':
+                return owner + '-' + kind, {p: 100.0 for p in points}
+            defense = {}
+            for r, col in points:
+                for point, weight in self._defense_candidates(
+                        board, r, col, player=3 - player).items():
+                    defense[point] = max(defense.get(point, 0), weight)
+            return owner + '-' + kind, defense
+        return None, {}
 
     def _defense_candidates(self, board, r, c, is_kill=True, player=BLACK):
         """防守候选（带权重）——模拟落子反推必杀点 (r,c) 的堵法。
@@ -650,14 +664,9 @@ class Search:
         state = self.sb if player == BLACK else self.sw
         has_kill = any(board[r][c] == EMPTY and SUBCLASS_PARENT[state[r][c]] == KILL
                        for r in range(SIZE) for c in range(SIZE))
-        if has_kill and not self.zero_active[player]:
-            self.zero_history[player].append(1)
-            # 动态窗口：GA 修改 GEAR_ZERO_WINDOW 后立即生效
-            if len(self.zero_history[player]) > GEAR_ZERO_WINDOW:
-                self.zero_history[player] = self.zero_history[player][-GEAR_ZERO_WINDOW:]
-            self.zero_active[player] = True
-        elif not has_kill:
-            self.zero_active[player] = False
+        self.zero_history[player].append(int(has_kill and not self.zero_active[player]))
+        self.zero_history[player] = self.zero_history[player][-max(1, GEAR_ZERO_WINDOW):]
+        self.zero_active[player] = has_kill
 
     def _target_gear(self, board, player=WHITE):
         """纯计算目标攻防档位（不更新 self.gear，不滞回）。

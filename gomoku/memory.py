@@ -363,19 +363,60 @@ def record_result(g):
         if g.moves[i]['player'] == win:
             last = g.moves[i]
             break
-    if last is None:
-        return
-    kt = loss_type_of(b, last['r'], last['c'], win)
-    wl = win_line_of(b, last['r'], last['c'], win)
+    kt = loss_type_of(b, last['r'], last['c'], win) if last else '其他'
+    wl = win_line_of(b, last['r'], last['c'], win) if last else []
+    from uuid import uuid4
+    receipt = {'id': uuid4().hex, 'result': 'draws', 'killType': None}
     if g.winner == ai:
         gm['totals']['wins'] = gm['totals'].get('wins', 0) + 1
-        gm['goodLines'].append({'opp': opp_moves, 'ai': ai_moves, 'killType': None, 'winLine': wl, 'at': at})
+        receipt['result'] = 'wins'
+        gm['goodLines'].append({'opp': opp_moves, 'ai': ai_moves, 'killType': None, 'winLine': wl, 'at': at, 'resultId': receipt['id']})
     elif g.winner == hp:
         gm['totals']['losses'] = gm['totals'].get('losses', 0) + 1
         gm['lossByType'][kt] = gm['lossByType'].get(kt, 0) + 1
-        gm['badLines'].append({'opp': opp_moves, 'ai': ai_moves, 'killType': kt, 'winLine': wl, 'at': at})
+        receipt.update(result='losses', killType=kt)
+        gm['badLines'].append({'opp': opp_moves, 'ai': ai_moves, 'killType': kt, 'winLine': wl, 'at': at, 'resultId': receipt['id']})
     else:
         gm['totals']['draws'] = gm['totals'].get('draws', 0) + 1
+    save_global_memory()
+    return receipt
+
+
+def rollback_result(receipt, entry=None):
+    """仅撤销本次结算的增量，避免影响其他对局及相同棋谱。"""
+    gm = global_memory()
+    if not receipt:
+        # 旧存档没有结算 ID：仅匹配本局完整棋谱和结束时间之前的最新记录。
+        if not entry or entry.get('mode') != 'ai':
+            return
+        hp = entry.get('humanPlayer', BLACK)
+        winner = entry['winner']
+        result = 'draws' if winner == 0 else 'losses' if winner == hp else 'wins'
+        if result == 'draws':
+            receipt = {'result': result, 'killType': None}
+        else:
+            field = 'badLines' if result == 'losses' else 'goodLines'
+            opp = [{'r': m['r'], 'c': m['c']} for m in entry['moves'] if m['player'] == hp]
+            ai = [{'r': m['r'], 'c': m['c']} for m in entry['moves'] if m['player'] != hp]
+            for i in range(len(gm[field]) - 1, -1, -1):
+                line = gm[field][i]
+                if (line.get('opp') == opp and line.get('ai') == ai
+                        and (entry.get('startedAt') or 0) <= line.get('at', 0)
+                        <= entry.get('endedAt', float('inf'))):
+                    gm[field].pop(i)
+                    receipt = {'result': result, 'killType': line.get('killType') or '其他'}
+                    break
+            if not receipt:
+                return
+    result = receipt['result']
+    gm['totals'][result] = max(0, gm['totals'].get(result, 0) - 1)
+    if result == 'losses':
+        kt = receipt['killType']
+        gm['lossByType'][kt] = max(0, gm['lossByType'].get(kt, 0) - 1)
+    if receipt.get('id'):
+        for field in ('goodLines', 'badLines'):
+            gm[field] = [line for line in gm[field]
+                         if line.get('resultId') != receipt['id']]
     save_global_memory()
 
 
@@ -515,4 +556,6 @@ def move_memory_bonus():
         return {}
     for key in bonus:
         bonus[key] = max(-MEM_ADJ_MAX, min(MEM_ADJ_MAX, bonus[key]))
-    return bonus
+    return {(r, c): bonus[_canon_point(r, c)]
+            for r in range(SIZE) for c in range(SIZE)
+            if _canon_point(r, c) in bonus}

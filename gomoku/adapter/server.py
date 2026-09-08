@@ -13,79 +13,33 @@
   {"id": 1, "ok": false, "error": "..."}
 
 特性：
-  - 启动时加载 GA 最优参数（data/ga_best_params.json）
+  - 仅 DSH_GOMOKU_GA=1 时加载包内 GA 参数
   - 按 session 缓存 Engine 与棋盘，只增量应用新增 moves，避免每次重放全盘
 """
 import json
-import os
 import sys
 
 from gomoku.core.utils import empty_board, place, BLACK, WHITE
-from gomoku.core.engine import Engine
-from gomoku.tools import ga_tune as G
+from gomoku import service, memory
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def load_ga_params():
-    """加载 GA 最优参数；找不到/损坏时静默回退默认。"""
-    path = os.path.join(ROOT, 'data', 'ga_best_params.json')
-    try:
-        with open(path, encoding='utf-8') as f:
-            data = json.load(f)
-        params = data.get('params', data)
-        G.apply_params(G._fix_genome(params))
-    except Exception:
-        pass
+# 兼容已有调用者；配置和开局只保留一份实现。
+load_ga_params = service.load_ga_params
 
 
 def compute_move(engine, board, moves, player):
-    """根据当前局面为 player 计算落子（与 ai_move.py 单次逻辑一致）。
-    返回 (row, col, ranked, net_used)：
-      - 黑第一手/白第二手：net_used=False（固定开局，不进决策网络）
-      - analyze_turn：net_used = 引擎本次落子是否为决策网络选出（唯一候选=false，
-        多候选且网络启用成功=true，纯算法回退=false）"""
-    # 黑第一手：天元
-    if player == BLACK and len(moves) == 0:
-        return 7, 7, [], False
-    # 白第二手：开局候选列表取第一个
-    if player == WHITE and len(moves) == 1:
-        cand = engine.compute_move(board)
-        if isinstance(cand, list) and cand:
-            return cand[0][0], cand[0][1], [], False
-    res = engine.analyze_turn(board, player)
-    mv = res['part4_result']['move']
-    # 全候选 + 原始分（决策网络/大模型辅助用）：唯一候选=超大分 1e9，多候选=深推分支分降序
-    ranked = res['part4_result'].get('ranked') or []
-    # 本步是否网络选出：多候选且引擎的决策网络实际参与（_decision_pick 用网络返回第一名）。
-    # _decision_pick 内部对"len==1"直取、对回退返回第一名；这里用 ranked>-1 判断"有候选可比"。
-    net_used = len(ranked) >= 2 and engine.use_decision_net and engine.decision_net is not None
-    if isinstance(mv, list):
-        mv = mv[0] if mv else None
-    if mv is None:
-        r, c = 7, 7
-        if board[r][c] != 0:
-            for rr in range(15):
-                for cc in range(15):
-                    if board[rr][cc] == 0:
-                        r, c = rr, cc
-                        break
-                else:
-                    continue
-                break
-        return r, c, [], net_used
-    return mv[0], mv[1], ranked, net_used
+    move, ranked, net_used = service.ai_move(board, moves, player, engine)
+    return (move[0], move[1], ranked, net_used) if move else (None, None, ranked, net_used)
 
 
 class Session:
     def __init__(self):
-        # 决策网络开关：默认【关闭】（上纯算法）；环境变量 DSH_GOMOKU_USE_NET=1 才启用。
-        # 注意：决策网络尚未可靠（只会"跟上纯算法"，防守死活未学好），默认用纯算法。
-        env_net = os.environ.get('DSH_GOMOKU_USE_NET')
-        use_net = env_net == '1'
-        self.engine = Engine(use_decision_net=use_net)
+        self.engine = service.create_engine()
         self.board = empty_board()
-        self.count = 0
+        self.moves = []
+
+    @property
+    def count(self):
+        return len(self.moves)
 
 
 sessions = {}
@@ -112,25 +66,41 @@ def handle(data):
     except (TypeError, ValueError):
         return {'id': req_id, 'ok': False, 'error': 'bad player'}
 
+    if player not in (BLACK, WHITE):
+        return {'id': req_id, 'ok': False, 'error': 'bad player'}
+    # 先完整校验，非法请求不得部分修改常驻会话。
+    try:
+        normalized = []
+        seen = set()
+        for i, move in enumerate(moves):
+            r, c, p = move['r'], move['c'], move['player']
+            if (type(r) is not int or type(c) is not int or type(p) is not int
+                    or not (0 <= r < 15 and 0 <= c < 15)
+                    or p != 1 + i % 2 or (r, c) in seen):
+                raise ValueError('invalid move history')
+            normalized.append({'r': r, 'c': c, 'player': p})
+            seen.add((r, c))
+    except (KeyError, TypeError, ValueError) as e:
+        return {'id': req_id, 'ok': False, 'error': str(e)}
+    moves = normalized
     s = sessions.get(sid)
-    if s is None or len(moves) < s.count:
-        # 新建或回退：重建后重放全量
+    if s is None or moves[:s.count] != s.moves:
         s = Session()
         sessions[sid] = s
-
-    # 增量应用新增 moves
     for m in moves[s.count:]:
-        r = int(m['r'])
-        c = int(m['c'])
-        p = int(m['player'])
+        r, c, p = m['r'], m['c'], m['player']
         place(s.board, r, c, p)
         s.engine.on_move(s.board, r, c, p)
-        s.count += 1
+        s.moves.append(dict(m))
+    # Node 在进程外写入战绩：每次真实请求重新读取，避免缓存一直看旧记忆。
+    memory._global_memory = None
+    s.engine._memory = None
 
     try:
         row, col, ranked, net_used = compute_move(s.engine, s.board, moves, player)
         return {'id': req_id, 'ok': True, 'row': row, 'col': col, 'ranked': ranked, 'net_used': bool(net_used)}
     except Exception as e:
+        sessions.pop(sid, None)
         return {'id': req_id, 'ok': False, 'error': str(e)}
 
 

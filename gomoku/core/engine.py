@@ -41,66 +41,38 @@ class Engine:
         self.use_decision_net = use_decision_net
         self._decision_model_tried = decision_net is not None
         self._memory = None                       # MemoryLookup 懒加载缓存
+        self.decision_net_used = False
         self.moves = []                           # 真实对局着法 [(r,c,player)]（记忆匹配用）
 
     # ---------- 状态维护 ----------
 
     def on_move(self, board, r, c, player):
-        """任意方落子后：委托 Search 做 3 段增量状态更新（黑白状态表），
+        """任意方落子后：委托 Search 更新完整四线上的黑白状态表，
         并记录真实着法序列（记忆匹配用；深推模拟走 search.on_move，不经过这里）。"""
         self.search.on_move(board, r, c, player)
         self.moves.append((r, c, player))
 
+    def reset(self, moves=()):
+        """重建真实棋谱及搜索状态，保留本实例的网络/温度设置。"""
+        self.search = Search(self.pattern)
+        self.deep_search.search = self.search
+        self.moves = []
+        self._memory = None
+        self.decision_net_used = False
+        board = [[EMPTY] * SIZE for _ in range(SIZE)]
+        for move in moves:
+            r, c, player = (move['r'], move['c'], move['player']) if isinstance(move, dict) else move
+            board[r][c] = player
+            self.on_move(board, r, c, player)
+
     # ---------- 核心动作：选点 ----------
 
     def compute_move(self, board, player=WHITE):
-        """AI（执白）决策入口，检测优先级【命中即止】（命中第一个就返回，不再看后面）：
-        0. 开局（盘面 0/1 子）→ 返回固定候选列表给 agent（不深度推演）
-        1. 白五连 w_five → 落子即胜 → 直接深度推演该点（必然 WIN）
-        2. 黑五连 b_five → 必须堵   → 直接深度推演堵点
-        3. 白VCF  w_vcf  → 活四/双眠四/眠四+活三，落子即无解杀 → 直接深度推演
-        4. 黑VCF  b_vcf  → 对方有连杀（含活四/44/43）：对每个黑必杀点反推堵点
-                           （_defense_candidates：黑落点中心100 + 各线端80，
-                             多杀型并集取最高分）→ 深度推演这些防守点
-        5. 白双三 w_d33  → 己方双三必杀 → 直接深度推演
-        6. 黑双三 b_d33  → 对方双三，同上反推堵点 → 深度推演
-        兜底（全无）     → 3攻2防 5 点 → 深度推演
-        返回：深度推演选出的最佳 (r, c)；开局则返回候选列表。
-        """
+        """按 player 视角选点；开局返回候选列表，其余复用 analyze_turn。"""
         opening = self._opening_candidates(board)
         if opening is not None:
             return opening     # 开局：候选列表直接给 agent
-        c = self.search.candidates(board)
-        if c['w_five']:
-            return self.deep_search.deep_search(board, c['w_five'], WHITE)
-        if c['b_five']:
-            return self.deep_search.deep_search(board, c['b_five'], WHITE)
-        if c['w_vcf']:
-            return self.deep_search.deep_search(board, c['w_vcf'], WHITE)
-        if c['b_vcf']:
-            # 黑VCF：对每个黑必杀点反推防守候选（必杀点100/反推80）
-            pts = {}
-            for (r, col) in c['b_vcf']:
-                for (rr, cc), score in self.search._defense_candidates(board, r, col).items():
-                    if (rr, cc) not in pts or score > pts[(rr, cc)]:
-                        pts[(rr, cc)] = score
-            return self.deep_search.deep_search(board, pts, WHITE)
-        if c['w_d33']:
-            return self.deep_search.deep_search(board, c['w_d33'], WHITE)
-        if c['b_d33']:
-            # 黑双三：必杀点反推堵法
-            pts = {}
-            for (r, col) in c['b_d33']:
-                for (rr, cc), score in self.search._defense_candidates(board, r, col).items():
-                    if (rr, cc) not in pts or score > pts[(rr, cc)]:
-                        pts[(rr, cc)] = score
-            return self.deep_search.deep_search(board, pts, WHITE)
-        # 无必杀兜底：AI 执白第一层候选按局势动态切换 4/3/2/1 攻防配比
-        return self.deep_search.deep_search(
-            board,
-            self.search._fallback(board, gear=self.search._choose_gear(board)),
-            WHITE,
-        )
+        return self.analyze_turn(board, player)['part4_result']['move']
 
     def _opening_candidates(self, board):
         """开局候选（固定逻辑，不进深度推演，返回候选【列表】给 agent 自行选）：
@@ -160,8 +132,7 @@ class Engine:
              direct（唯一候选）→ 不深推，ranked 给超大分 1e9；
              searched（候选 ≥2）→ 全部候选逐个深推打分，ranked 全返回。
         """
-        opp = 3 - player
-        mine = self.search.candidates(board)
+        self.decision_net_used = False
         opp_state = self.search.sw if player == BLACK else self.search.sb
         my_state = self.search.sb if player == BLACK else self.search.sw
         result = {
@@ -169,40 +140,12 @@ class Engine:
             'part1_opp_threat': self._threat_stats(board, opp_state),
             'part2_my_threat': self._threat_stats(board, my_state),
         }
-        # 3. 候选点（初始，类型标记）——只看 0 必杀级
-        if player == BLACK:
-            my_five, opp_five = mine['b_five'], mine['w_five']
-            my_vcf, opp_vcf = mine['b_vcf'], mine['w_vcf']
-            my_d33, opp_d33 = mine['b_d33'], mine['w_d33']
-        else:
-            my_five, opp_five = mine['w_five'], mine['b_five']
-            my_vcf, opp_vcf = mine['w_vcf'], mine['b_vcf']
-            my_d33, opp_d33 = mine['w_d33'], mine['b_d33']
-        cand = None
-        if my_five:
-            cand = {'type': 'direct', 'reason': 'my-five', 'points': [(r, c) for (r, c) in my_five]}
-        elif opp_five:
-            cand = {'type': 'direct', 'reason': 'opp-five', 'points': [(r, c) for (r, c) in opp_five]}
-        elif my_vcf:
-            cand = {'type': 'direct', 'reason': 'my-vcf', 'points': [(r, c) for (r, c) in my_vcf]}
-        elif opp_vcf:
-            # 对方 VCF（活四/44/43）：对每个对方必杀点反推堵点（中心100 + 端80）
-            pts = {}
-            for (r, col) in opp_vcf:
-                for (rr, cc), s in self.search._defense_candidates(board, r, col, is_kill=True, player=opp).items():
-                    if (rr, cc) not in pts or s > pts[(rr, cc)]:
-                        pts[(rr, cc)] = s
-            cand = {'type': 'defense', 'reason': 'opp-vcf', 'points': pts}
-        elif my_d33:
-            cand = {'type': 'direct', 'reason': 'my-d33', 'points': [(r, c) for (r, c) in my_d33]}
-        elif opp_d33:
-            # 对方双三：必杀点加搜索（对每个 d33 点反推堵法）
-            pts = {}
-            for (r, col) in opp_d33:
-                for (rr, cc), s in self.search._defense_candidates(board, r, col, is_kill=True, player=opp).items():
-                    if (rr, cc) not in pts or s > pts[(rr, cc)]:
-                        pts[(rr, cc)] = s
-            cand = {'type': 'defense', 'reason': 'opp-d33', 'points': pts}
+        reason, tactical = self.search.tactical_candidates(board, player)
+        if reason:
+            defense = reason in ('opp-vcf', 'opp-d33')
+            cand = {'type': 'defense' if defense else 'direct',
+                    'reason': reason,
+                    'points': tactical if defense else list(tactical)}
         else:
             # 机机对战中黑白双方都可用动态配比；
             # 深推内部仍用固定 3攻2防，保证搜索树稳定。
@@ -265,6 +208,7 @@ class Engine:
     def _decision_pick(self, board, player, ranked):
         """决策网络选点：唯一候选直取；多候选时网络打分选最高。
         网络未启用/未加载/异常 → 回退纯算法第一名（两套系统并行，互不干扰）。"""
+        self.decision_net_used = False
         if not ranked:
             return None
         if len(ranked) == 1:
@@ -289,6 +233,7 @@ class Engine:
             mask = torch.from_numpy(mask).to(dev)
             idx = net.pick(xb, xc, mask)[0]
             pt = ranked[idx]
+            self.decision_net_used = True
             return (pt['r'], pt['c'])
         except Exception:
             return (ranked[0]['r'], ranked[0]['c'])

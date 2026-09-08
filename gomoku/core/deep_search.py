@@ -4,8 +4,8 @@
 #
 # 核心机制：
 #   - 温度银行：每手决策一个温度总预算 T0，每层推演按候选权重扣温
-#       DT = DT_M / w + DT_N（w=候选权重 50~100：权重高→耗温少→推得深）
-#       温度耗尽 → 叶子：不再落子，直接评估当前局面
+#       DT = DT_M*((100-w)/100)^DT_POW + DT_N（权重高→耗温少）
+#       每轮双方模拟落子后检查温度，耗尽则评估当前叶子
 #   - 一层 = 白+黑一个完整回合；黑应手展开 BLACK_CAND_N 个候选，
 #     取对白方最不利的分支（因为候选评分是半成品，单点最凶会漏杀）
 #   - 叶子评估：成五 ±1000×过程权重；僵持 → 过程分（快杀/干净杀得分高）
@@ -19,6 +19,7 @@
 # ============================================================
 
 import random
+import os
 
 from .utils import SIZE, EMPTY, BLACK, WHITE
 
@@ -46,7 +47,7 @@ class DeepSearch:
         self.use_nn = True          # 是否使用神经网络叶子评估（eval 时可按实例关闭）
         self.collect_samples = False  # 是否收集深推叶子分支样本
         self.samples = []             # 收集到的 (ctx_list, label)
-        self.model_path = 'gomoku/nn/value.pt'  # 叶子 NN 模型路径（可切换）
+        self.model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'nn', 'value.pt')  # 叶子 NN 模型路径（可切换）
         self._nn_model = None         # 已加载的 NN 模型缓存
 
     # ---------- 基础工具 ----------
@@ -166,24 +167,12 @@ class DeepSearch:
 
     def _candidate_points(self, board, player, n=5):
         """当前 player 的候选点（带权重），供推演层展开：
-        优先检测优先级（0 必杀级：五连/VCF/双三，权重 100），否则兜底 3攻2防（权重 60）。
-        返回 [(r, c, w), ...]（降序）。权重同时用于温度分配与叶子过程分。"""
-        if player == WHITE:
-            c = self.search.candidates(board)
-            if c['w_five']:
-                return [(r, col, 100.0) for (r, col) in c['w_five'][:n]]
-            if c['w_vcf']:
-                return [(r, col, 100.0) for (r, col) in c['w_vcf'][:n]]
-            if c['w_d33']:
-                return [(r, col, 100.0) for (r, col) in c['w_d33'][:n]]
-        else:
-            c = self.search.candidates(board)
-            if c['b_five']:
-                return [(r, col, 100.0) for (r, col) in c['b_five'][:n]]
-            if c['b_vcf']:
-                return [(r, col, 100.0) for (r, col) in c['b_vcf'][:n]]
-            if c['b_d33']:
-                return [(r, col, 100.0) for (r, col) in c['b_d33'][:n]]
+        与顶层共用强制攻防优先级；普通候选为 3攻2防，使用真实综合分。
+        返回 [(r, c, w), ...]。权重同时用于温度分配与叶子过程分。"""
+        reason, tactical = self.search.tactical_candidates(board, player)
+        if reason:
+            # 战术防守不得被普通 top-N 名额截断，否则会漏掉唯一救点。
+            return [(r, c, w) for (r, c), w in tactical.items()]
         # 兜底：3攻2防，视角与当前 player 对称（白攻+黑防 / 黑攻+白防）
         fb = self.search._fallback(board, player=player, with_score=True)
         # 权重 = _candidate_score 真实综合分（0~100），温度银行按此分配深度：
@@ -209,7 +198,7 @@ class DeepSearch:
 
     def _recursive(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0):
         """递归推演：player 落一子（候选）→ opp 应一手 → 递归下一层。
-        一层 = 白+黑完整回合；温度不足 → 叶子评估（不落子，只评估当前局面）。
+        一层 = 双方完整回合；回合后温度耗尽则进行叶子评估。
         模拟落子后同步更新状态表（journal 哈希表回滚），保证候选点/必杀检测
         基于当前分支的真实棋盘，而不是进入深推前的过期状态表。
         ctx_branch 与 branch 同步记录每步上下文，供神经网络分支矩阵使用。

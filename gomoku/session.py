@@ -13,14 +13,14 @@ class PlaySession:
         self.sid = sid
         self.game = Game(human_player=BLACK, mode='ai', ai_mode='engine')
         self.game.register(sid)
-        self.engine = service.get_engine()
+        self.engine = service.create_engine()
 
     def reset(self, mode='ai', human_player=BLACK):
+        history = self.game.history[:]
         self.game = Game(human_player=human_player, mode=mode, ai_mode='engine')
+        self.game.history = history
         self.game.register(self.sid)
-        self.engine = service.get_engine()
-        # 引擎为单例：换新对局必须全盘重建状态表，否则上一盘残留干扰检测
-        self.engine.search.rebuild_all(self.game.board())
+        self.engine.reset()
 
     def place(self, r, c, player):
         res = self.game.place(r, c, player)
@@ -34,9 +34,15 @@ class PlaySession:
             return None
         if player is None:
             player = game.ai_player()
+        if player != game.current_player():
+            return None
         mv, ranked, net_used = service.ai_move(game.board(), game.moves, player, engine=self.engine)
+        if mv is None:
+            return None
         r, c = mv
-        self.place(r, c, player)
+        res = self.place(r, c, player)
+        if not res['ok']:
+            raise RuntimeError(res['error'])
         return (r, c), ranked, net_used
 
     def undo(self, by='human'):
@@ -48,4 +54,4 @@ class PlaySession:
             self.game.undo_last_move()
         # Game 层悔棋只回退 moves，引擎增量状态表不回退 →
         # 全盘重建，否则幽灵子残留干扰后续候选/必杀检测（漏杀根因）
-        self.engine.search.rebuild_all(self.game.board())
+        self.engine.reset(self.game.moves)
