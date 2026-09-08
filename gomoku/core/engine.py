@@ -47,7 +47,7 @@ class Engine:
     # ---------- 状态维护 ----------
 
     def on_move(self, board, r, c, player):
-        """任意方落子后：委托 Search 更新完整四线上的黑白状态表，
+        """任意方落子后：委托 Search 局部更新黑白状态表，
         并记录真实着法序列（记忆匹配用；深推模拟走 search.on_move，不经过这里）。"""
         self.search.on_move(board, r, c, player)
         self.moves.append((r, c, player))

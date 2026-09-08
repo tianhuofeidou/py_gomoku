@@ -2,7 +2,7 @@
 # search.py —— 搜索层（决策主流程 + 状态表维护）
 # 职责：
 #   1. 维护黑白状态表（全量 15×15，每格 18 子类编号 0-17）
-#   2. 落子后更新完整四线的黑白棋型（精确增量更新）
+#   2. 落子后按邻域、棋段及状态区做 3 段局部更新
 #   3. 候选点生成：按检测优先级分类（5连/活四/VCF/双三）+ 防守反推
 #   4. 无必杀时兜底：3攻2防（棋型分 + 邻近度 + 攻防一体 平滑评分）
 #
@@ -14,8 +14,8 @@
 #   子类 18 种：必杀5(five/live4/d44/d34/d33) + 威胁8(A1眠四系4+A2活三系4)
 #             + 潜力4(b系) + 无用1(none)
 #
-# 【精确增量更新】：只重算落子所在行、列、两条对角线。
-# SearchScope 保留旧范围接口，正式 on_move 不再依赖它的启发式边界。
+# 【局部增量更新】：黑落子分两段更新黑白表，白落子按影响区更新双方。
+# 更新范围由 SearchScope 的邻域、棋段及状态区决定。
 # ============================================================
 
 from .utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board
@@ -331,7 +331,7 @@ class Search:
 
     def on_move(self, board, r, c, player, journal=None, record_history=True):
         """任意方落子后的状态更新（增量，不重扫全盘）。
-        先清落子点自身，再重算四条直线上的空位（双方），覆盖长跳链。
+        先清落子点自身，再按 SearchScope 的 3 段局部范围更新黑白表。
 
         journal：可选哈希表，记录本次更新中“首次被修改格子”的旧值，
                  用于深推模拟后的状态表回滚。
@@ -341,13 +341,15 @@ class Search:
         # 落子点已占：双方状态表立即置无用，日志保留旧值供模拟回滚。
         self._write_state(self.sb, r, c, 17, journal)
         self._write_state(self.sw, r, c, 17, journal)
-        # 一个点的棋型只依赖经过它的四条直线。刷新落子点的完整四线，
-        # 覆盖双空跳二及长跳链；固定半径/旧棋段边界会漏掉远端新潜力。
-        region = {(r + k * dr, c + k * dc)
-                  for dr, dc in DIRECTIONS for k in range(-SIZE + 1, SIZE)
-                  if in_board(r + k * dr, c + k * dc)}
-        self._update(board, region, BLACK, self.sb, journal)
-        self._update(board, region, WHITE, self.sw, journal)
+        if player == BLACK:
+            reg1 = self.scope.segment1_black(board, r, c, self.sb)
+            self._update(board, reg1, BLACK, self.sb, journal)
+            reg2 = self.scope.segment2_white(board, r, c, self.sb, self.sw)
+            self._update(board, reg2, WHITE, self.sw, journal)
+        else:
+            reg3 = self.scope.segment3_update(board, r, c, self.sb, self.sw)
+            self._update(board, reg3, BLACK, self.sb, journal)
+            self._update(board, reg3, WHITE, self.sw, journal)
         # 每个真实棋步更新双方杀势及历史窗口，同一杀势持续存在只计一次。
         # 深推模拟不记录，避免假设棋步污染真实历史。
         if record_history:

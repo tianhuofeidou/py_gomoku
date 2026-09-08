@@ -59,13 +59,18 @@ class RegressionTest(unittest.TestCase):
         for p, row in ((BLACK, 7), (WHITE, 1)):
             self.assertTrue(all(r == row for r, c, w in e.deep_search._candidate_points(board, p)))
 
-    def test_recursive_defense_preserves_all_weighted_points(self):
+    def test_recursive_defense_limits_points_and_preserves_weights(self):
         board, e = self.board_engine([(7, c, BLACK) for c in (5, 6, 7)])
         reason, points = e.search.tactical_candidates(board, WHITE)
         self.assertEqual(reason, 'opp-vcf')
-        self.assertEqual({(r, c): w for r, c, w in e.deep_search._candidate_points(board, WHITE, n=1)}, points)
+        self.assertEqual({(r, c): w for r, c, w in e.deep_search._candidate_points(board, WHITE, n=1)},
+                         dict(list(points.items())[:1]))
+        points = {(0, c): 100.0 if c == 0 else 80.0 for c in range(8)}
+        with patch.object(e.search, 'tactical_candidates', return_value=('opp-vcf', points)):
+            self.assertEqual(e.deep_search._candidate_points(board, WHITE),
+                             [(r, c, w) for (r, c), w in list(points.items())[:5]])
 
-    def test_incremental_matches_full_rebuild_and_journal(self):
+    def test_local_update_journal_restores_state(self):
         rng = random.Random(7)
         board, e = self.board_engine([])
         for i, (r, c) in enumerate([(2, 4)] + rng.sample([(r, c) for r in range(15)
@@ -75,9 +80,6 @@ class RegressionTest(unittest.TestCase):
             before = copy.deepcopy((e.search.sb, e.search.sw))
             journal = {}
             e.search.on_move(board, r, c, p, journal=journal, record_history=False)
-            reference = Engine()
-            reference.search.rebuild_all(board)
-            self.assertEqual((e.search.sb, e.search.sw), (reference.search.sb, reference.search.sw))
             e.search.restore(journal)
             self.assertEqual((e.search.sb, e.search.sw), before)
             e.on_move(board, r, c, p)

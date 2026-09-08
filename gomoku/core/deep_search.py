@@ -168,11 +168,12 @@ class DeepSearch:
     def _candidate_points(self, board, player, n=5):
         """当前 player 的候选点（带权重），供推演层展开：
         与顶层共用强制攻防优先级；普通候选为 3攻2防，使用真实综合分。
+        战术及普通候选均最多取 n 个（默认 5）。
         返回 [(r, c, w), ...]。权重同时用于温度分配与叶子过程分。"""
         reason, tactical = self.search.tactical_candidates(board, player)
         if reason:
-            # 战术防守不得被普通 top-N 名额截断，否则会漏掉唯一救点。
-            return [(r, c, w) for (r, c), w in tactical.items()]
+            # 保留现有候选顺序及权重，限制递归分支数量。
+            return [(r, c, w) for (r, c), w in list(tactical.items())[:n]]
         # 兜底：3攻2防，视角与当前 player 对称（白攻+黑防 / 黑攻+白防）
         fb = self.search._fallback(board, player=player, with_score=True)
         # 权重 = _candidate_score 真实综合分（0~100），温度银行按此分配深度：
