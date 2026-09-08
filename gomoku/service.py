@@ -10,7 +10,7 @@
 import json
 import os
 
-from gomoku.core.utils import empty_board, place, BLACK, WHITE
+from gomoku.core.utils import empty_board, place, SIZE, EMPTY, BLACK, WHITE
 from gomoku.core.engine import Engine
 from gomoku.tools import ga_tune as G
 
@@ -57,6 +57,27 @@ def ai_move(board, moves, player, engine=None):
         cand = engine.compute_move(board)
         if isinstance(cand, list) and cand:
             return (cand[0][0], cand[0][1]), [], False
+
+    # 黑第二手（人类执白时 AI 的第二手，moves=[黑天元, 白1]）：
+    # 贴白子开局（白 8 邻域空点中取离天元最近者），不深推——
+    # 空旷 2 子局面深推候选质量差会乱走（与白第二手对称的开局特例）。
+    if player == BLACK and len(moves) == 2:
+        wr, wc = moves[-1]['r'], moves[-1]['c']
+        best = None
+        best_d = 99
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                rr, cc = wr + dr, wc + dc
+                if not (0 <= rr < SIZE and 0 <= cc < SIZE) or board[rr][cc] != EMPTY:
+                    continue
+                d = max(abs(rr - 7), abs(cc - 7))   # 距天元（切比雪夫）
+                if d < best_d:
+                    best_d = d
+                    best = (rr, cc)
+        if best:
+            return (best[0], best[1]), [], False
 
     res = engine.analyze_turn(board, player)
     mv = res['part4_result']['move']
