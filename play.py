@@ -41,6 +41,8 @@ class GomokuApp:
     def __init__(self, root):
         self.root = root
         self.root.title('五子棋 · 独立版（gomoku）')
+        self.root.geometry('1120x780')      # 初始窗口；棋盘随窗口自适应缩放
+        self.root.minsize(720, 560)
         self.session = PlaySession('local')
         # 默认纯算法（神经网络已全局停用）
         self.session.engine.use_decision_net = False
@@ -97,32 +99,52 @@ class GomokuApp:
         self.info = tk.Text(self.root, width=38, height=26, state=tk.DISABLED)
         self.info.pack(side=tk.LEFT, fill=tk.Y)
 
-        w = self.MARGIN * 2 + self.CELL * (self.SIZE - 1)
-        self.canvas = tk.Canvas(self.root, width=w, height=w, bg='#e9c786', highlightthickness=0)
-        self.canvas.pack(side=tk.LEFT, padx=10, pady=10)
+        # 棋盘画布：填满剩余空间，格子尺寸随窗口动态计算（全屏自动放大）
+        self.canvas = tk.Canvas(self.root, bg='#e9c786', highlightthickness=0)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.canvas.bind('<Button-1>', self._on_click)
+        self.canvas.bind('<Configure>', lambda _e: self._refresh())
+
+    def _grid(self):
+        """动态棋盘参数：(margin, cell)。
+        格子尺寸取画布短边可用空间（15×15 棋盘 + 边距），全屏/放大自动变大；
+        画布尚未布局（winfo=1）时回退到固定 34。"""
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            return self.MARGIN, self.CELL
+        avail = max(min(w, h) - 12, 260)
+        cell = max(10, avail // self.SIZE)
+        margin = (min(w, h) - cell * (self.SIZE - 1)) // 2
+        return margin, cell
 
     def _cell_xy(self, r, c):
-        return self.MARGIN + c * self.CELL, self.MARGIN + r * self.CELL
+        margin, cell = self._grid()
+        return margin + c * cell, margin + r * cell
 
     # ---------- 绘制 ----------
     def _draw_board(self, board):
         cv = self.canvas
         cv.delete('all')
-        right = self.MARGIN + (self.SIZE - 1) * self.CELL
+        margin, cell = self._grid()
+        right = margin + (self.SIZE - 1) * cell
+        label_font = max(8, min(14, cell // 3))
         for i in range(self.SIZE):
-            x, _ = self._cell_xy(0, i)      # 第 i 条竖线：x = MARGIN + i*CELL
-            _, y = self._cell_xy(i, 0)      # 第 i 条横线：y = MARGIN + i*CELL
-            cv.create_line(x, self.MARGIN, x, right)
-            cv.create_line(self.MARGIN, y, right, y)
+            x, _ = self._cell_xy(0, i)      # 第 i 条竖线：x = margin + i*cell
+            _, y = self._cell_xy(i, 0)      # 第 i 条横线：y = margin + i*cell
+            cv.create_line(x, margin, x, right)
+            cv.create_line(margin, y, right, y)
         for i in range(self.SIZE):
             x, _ = self._cell_xy(0, i)
             _, y = self._cell_xy(i, 0)
-            cv.create_text(self.MARGIN - 12, y, text=str(i + 1), font=('Arial', 8), fill='#555')
-            cv.create_text(x, self.MARGIN - 12, text=COLUMNS[i], font=('Arial', 8), fill='#555')
+            cv.create_text(max(4, margin - 14), y, text=str(i + 1),
+                           font=('Arial', label_font), fill='#555')
+            cv.create_text(x, max(6, margin - 14), text=COLUMNS[i],
+                           font=('Arial', label_font), fill='#555')
+        star = max(2, cell // 9)
         for (r, c) in [(3, 3), (3, 11), (11, 3), (11, 11), (7, 7)]:
             x, y = self._cell_xy(r, c)
-            cv.create_oval(x - 3, y - 3, x + 3, y + 3, fill='#333', outline='')
+            cv.create_oval(x - star, y - star, x + star, y + star, fill='#333', outline='')
         for r in range(self.SIZE):
             for c in range(self.SIZE):
                 v = board[r][c]
@@ -130,21 +152,23 @@ class GomokuApp:
                     continue
                 x, y = self._cell_xy(r, c)
                 color = '#111' if v == BLACK else '#f5f5f5'
-                cv.create_oval(x - self.CELL * 0.42, y - self.CELL * 0.42,
-                               x + self.CELL * 0.42, y + self.CELL * 0.42,
+                rad = cell * 0.42
+                cv.create_oval(x - rad, y - rad, x + rad, y + rad,
                                fill=color, outline='#333')
         if self.last_move:
             r, c = self.last_move
             if 0 <= r < self.SIZE and 0 <= c < self.SIZE and board[r][c] != EMPTY:
                 x, y = self._cell_xy(r, c)
-                cv.create_oval(x - 4, y - 4, x + 4, y + 4, fill='#e33', outline='')
+                mark = max(3, cell // 8)
+                cv.create_oval(x - mark, y - mark, x + mark, y + mark, fill='#e33', outline='')
 
     # ---------- 交互 ----------
     def _on_click(self, ev):
         if self.session.game.mode == 'vs' or self.ai_thinking:
             return
-        c = round((ev.x - self.MARGIN) / self.CELL)
-        r = round((ev.y - self.MARGIN) / self.CELL)
+        margin, cell = self._grid()
+        c = round((ev.x - margin) / cell)
+        r = round((ev.y - margin) / cell)
         if not (0 <= r < self.SIZE and 0 <= c < self.SIZE):
             return
         game = self.session.game
