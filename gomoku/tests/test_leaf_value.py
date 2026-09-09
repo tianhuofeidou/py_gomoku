@@ -118,6 +118,24 @@ class LeafScoreTest(unittest.TestCase):
         self.assertEqual(st['total'], 1)
 
 
+class PickKeyTest(unittest.TestCase):
+
+    def test_forced_layers(self):
+        ds = Engine().deep_search
+        win = ds._pick_key(1, 0.0, 100)
+        mid = ds._pick_key(0, -0.6, 99999)
+        los = ds._pick_key(-1, 0.0, 100)
+        # 必胜档 > 无判定档 > 必败档（层级第一优先）
+        self.assertGreater(win, mid)
+        self.assertGreater(mid, los)
+
+    def test_ratio_orders_within_neutral(self):
+        ds = Engine().deep_search
+        high = ds._pick_key(0, 0.5, 1000)
+        low = ds._pick_key(0, -0.6, 99999)     # 比例低者即使 score 再高也靠后
+        self.assertGreater(high, low)
+
+
 class IntegrationTest(unittest.TestCase):
 
     def test_rank_returns_desc_and_valid(self):
@@ -130,8 +148,9 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(r4['type'], 'searched')
         ranked = r4['ranked']
         self.assertTrue(len(ranked) >= 2)
-        scores = [x['score'] for x in ranked]
-        self.assertEqual(scores, sorted(scores, reverse=True))
+        keys = [e.deep_search._pick_key(x.get('forced', 0), x.get('fatal_ratio', 0.0), x['score'])
+                for x in ranked]
+        self.assertEqual(keys, sorted(keys, reverse=True))
         self.assertEqual(r4['move'], (ranked[0]['r'], ranked[0]['c']))
         for x in ranked:
             self.assertEqual(b[x['r']][x['c']], 0)

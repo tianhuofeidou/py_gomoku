@@ -96,55 +96,67 @@ class GomokuApp:
         self.turn_label = ttk.Label(panel, text='', justify=tk.LEFT, wraplength=210)
         self.turn_label.grid(row=23, column=0, sticky='w', pady=8)
 
-        self.info = tk.Text(self.root, width=38, height=26, state=tk.DISABLED)
+        self.info = tk.Text(self.root, width=24, height=26, state=tk.DISABLED)
         self.info.pack(side=tk.LEFT, fill=tk.Y)
 
         # 棋盘画布：填满剩余空间，格子尺寸随窗口动态计算（全屏自动放大）
-        self.canvas = tk.Canvas(self.root, bg='#e9c786', highlightthickness=0)
+        self.canvas = tk.Canvas(self.root, bg='#f2ecdf', highlightthickness=0)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.canvas.bind('<Button-1>', self._on_click)
         self.canvas.bind('<Configure>', lambda _e: self._refresh())
 
     def _grid(self):
-        """动态棋盘参数：(margin, cell)。
-        格子尺寸取画布短边可用空间（15×15 棋盘 + 边距），全屏/放大自动变大；
+        """动态棋盘参数：(margin_x, margin_y, cell)。
+        格子尺寸让棋盘铺满画布短边（15 列线 = 14 间隔 + 两侧坐标字空间），
+        横竖分别居中；全屏/放大窗口自动变大，仅保留最小边距。
         画布尚未布局（winfo=1）时回退到固定 34。"""
         w = self.canvas.winfo_width()
         h = self.canvas.winfo_height()
         if w <= 1 or h <= 1:
-            return self.MARGIN, self.CELL
-        avail = max(min(w, h) - 12, 260)
-        cell = max(10, avail // self.SIZE)
-        margin = (min(w, h) - cell * (self.SIZE - 1)) // 2
-        return margin, cell
+            return self.MARGIN, self.MARGIN, self.CELL
+        short = min(w, h)
+        label = max(14, min(34, short // 32))          # 行号/列号预留空间
+        cell = max(12, (short - 2 * label) // (self.SIZE - 1))
+        mx = max(2, (w - cell * (self.SIZE - 1)) // 2)
+        my = max(2, (h - cell * (self.SIZE - 1)) // 2)
+        return mx, my, cell
 
     def _cell_xy(self, r, c):
-        margin, cell = self._grid()
-        return margin + c * cell, margin + r * cell
+        mx, my, cell = self._grid()
+        return mx + c * cell, my + r * cell
 
     # ---------- 绘制 ----------
     def _draw_board(self, board):
         cv = self.canvas
         cv.delete('all')
-        margin, cell = self._grid()
-        right = margin + (self.SIZE - 1) * cell
+        mx, my, cell = self._grid()
+        right = mx + (self.SIZE - 1) * cell
+        bottom = my + (self.SIZE - 1) * cell
         label_font = max(8, min(14, cell // 3))
+        # ① 棋盘底板 + 边界（木色板、深色粗边框）——棋盘是一个整体
+        pad = max(4, cell // 6)
+        cv.create_rectangle(mx - pad, my - pad, right + pad, bottom + pad,
+                            fill='#e2b876', outline='#7a4a1e', width=3)
+        # ② 网格线
         for i in range(self.SIZE):
-            x, _ = self._cell_xy(0, i)      # 第 i 条竖线：x = margin + i*cell
-            _, y = self._cell_xy(i, 0)      # 第 i 条横线：y = margin + i*cell
-            cv.create_line(x, margin, x, right)
-            cv.create_line(margin, y, right, y)
+            x, _ = self._cell_xy(0, i)      # 第 i 条竖线：x = mx + i*cell
+            _, y = self._cell_xy(i, 0)      # 第 i 条横线：y = my + i*cell
+            cv.create_line(x, my, x, bottom, fill='#7a4a1e')
+            cv.create_line(mx, y, right, y, fill='#7a4a1e')
+        # ③ 行号/列号（棋盘外侧）
         for i in range(self.SIZE):
             x, _ = self._cell_xy(0, i)
             _, y = self._cell_xy(i, 0)
-            cv.create_text(max(4, margin - 14), y, text=str(i + 1),
-                           font=('Arial', label_font), fill='#555')
-            cv.create_text(x, max(6, margin - 14), text=COLUMNS[i],
-                           font=('Arial', label_font), fill='#555')
+            cv.create_text(max(2, mx - 14), y, text=str(i + 1),
+                           font=('Arial', label_font), fill='#8a6a3a')
+            cv.create_text(x, max(2, my - 14), text=COLUMNS[i],
+                           font=('Arial', label_font), fill='#8a6a3a')
+        # ④ 星位
         star = max(2, cell // 9)
         for (r, c) in [(3, 3), (3, 11), (11, 3), (11, 11), (7, 7)]:
             x, y = self._cell_xy(r, c)
             cv.create_oval(x - star, y - star, x + star, y + star, fill='#333', outline='')
+        # ⑤ 棋子
         for r in range(self.SIZE):
             for c in range(self.SIZE):
                 v = board[r][c]
@@ -155,6 +167,7 @@ class GomokuApp:
                 rad = cell * 0.42
                 cv.create_oval(x - rad, y - rad, x + rad, y + rad,
                                fill=color, outline='#333')
+        # ⑥ 上一步标记
         if self.last_move:
             r, c = self.last_move
             if 0 <= r < self.SIZE and 0 <= c < self.SIZE and board[r][c] != EMPTY:
@@ -166,9 +179,9 @@ class GomokuApp:
     def _on_click(self, ev):
         if self.session.game.mode == 'vs' or self.ai_thinking:
             return
-        margin, cell = self._grid()
-        c = round((ev.x - margin) / cell)
-        r = round((ev.y - margin) / cell)
+        mx, my, cell = self._grid()
+        c = round((ev.x - mx) / cell)
+        r = round((ev.y - my) / cell)
         if not (0 <= r < self.SIZE and 0 <= c < self.SIZE):
             return
         game = self.session.game
@@ -243,8 +256,17 @@ class GomokuApp:
             lines = []
             for i, x in enumerate(ranked[:5]):
                 mark = '   ← 选中' if (x['r'], x['c']) == (r, c) else ''
-                lines.append('  %d. %s%d  分 %s%s' % (i + 1, COLUMNS[x['c']], x['r'] + 1,
-                                                      self._fmt_score(x['score']), mark))
+                tag = ''
+                forced = x.get('forced', 0)
+                ratio = x.get('fatal_ratio', 0.0)
+                if forced == 1:
+                    tag = '  ⚔必胜'
+                elif forced == -1:
+                    tag = '  ⚔必败'
+                elif ratio:
+                    tag = '  ⚔胜败比%+.2f' % ratio
+                lines.append('  %d. %s%d  分 %s%s%s' % (i + 1, COLUMNS[x['c']], x['r'] + 1,
+                                                        self._fmt_score(x['score']), mark, tag))
             self._log('候选打分：\n' + '\n'.join(lines))
 
     def _run_ai(self, fn):
