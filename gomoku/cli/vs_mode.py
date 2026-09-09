@@ -11,6 +11,7 @@
 import argparse
 import json
 import os
+import sys
 
 from gomoku.tools import ga_tune as G
 from gomoku.core import search as S

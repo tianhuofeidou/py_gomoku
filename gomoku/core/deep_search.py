@@ -30,25 +30,87 @@ class DeepSearch:
     供 engine 的 compute_move / analyze_turn 调用。"""
 
     # 温度参数（结构：幂函数降温，参数交给 GA 寻优）
-    # 温度参数（结构：幂函数降温，参数交给 GA 寻优）
-    # 分数驱动后实测：160→~0.7s/手、240→1.4s(最慢4.3s)、320→2.9s(最慢7.6s)、
-    # 400→前5局面平均9s+(最慢16s)、480→平均16s+(最慢34s)——320 为可用上限。
-    # GUI 档位（play.py TEMP_LEVELS）：轻快160 / 标准240 / 认真320。
-    T0 = 320.0            # 初始温度（每手决策总预算，默认=认真档）
+    # 本机实测（3 个中盘局面单步耗时）：80→avg 0.11s(最慢 0.13s)、160→avg 0.47s(最慢 1.3s)、
+    # 240→avg 10s(复杂局面 18~29s)。320 在复杂局面 90s+ 仍未完成 → 档位定稿 80/160/240。
+    T0 = 160.0            # 初始温度（每手决策总预算，默认=标准档，GUI 可切 80/160/240）
     DT_M = 400.0           # 单层耗温系数 DT = DT_M*((100-w)/100)^DT_POW + DT_N
     DT_POW = 2.0           # 幂次：控制曲线形状（GA 可调）
     DT_N = 3.0             # 基础耗温
+    # 深度收窄（越深越窄）：每层展开的候选数随深度递减——深度价值集中在
+    # 最强势的几条线上（强制链），收窄宽度可指数级减少叶子数，基本不损失棋力：
+    #   回合数(plies//2) >= NARROW_ROUNDS     → 候选 5 → 3
+    #   回合数(plies//2) >= HARD_NARROW_ROUNDS → 候选 3 → 1
+    NARROW_ROUNDS = 4
+    HARD_NARROW_ROUNDS = 8
+    CAND_N_FULL = 5
+    CAND_N_MID = 3
+    CAND_N_DEEP = 1
     WIN_SCORE = 1000.0     # 成五基准分
-    THREAT_BONUS_WHITE = 100.0   # 白方威胁步奖励（白威胁权重要高于黑）
-    THREAT_BONUS_BLACK = 50.0    # 黑方威胁步惩罚
+    # ------------------------------------------------------------
+    # 18 棋型结果分（无胜负 stale 叶值）——纯终局判定，不看路径。
+    # 索引 = 18 子类编号 0-17（search.SUBCLASS_NAMES 顺序）：
+    #   0-4 必杀：five/live4/d44/d34/d33
+    #   5-8 a1 眠四系，9-12 a2 活三系，13-16 b 潜力系，17 none
+    # 排名递减权重：候选榜第 0 个是第 1 名 → 满权重；第 2 名 0.5；……
+    RANK_W = (1.0, 0.5, 0.3, 0.2, 0.1)
+    # 我方候选点（我下一手用它）：子类威胁等级分。
+    # 第一档（0-4）——叶子处轮到我（先手），我任意一个 kill 级点即必胜/必胜结构：
+    #   five +900（直接成五）> live4 +880（活四不可解）> d44 +750 > d34 +700 > d33 +650
+    MY_SUB_VALUE = (
+        900.0, 880.0, 750.0, 700.0, 650.0,
+        400.0, 350.0, 300.0, 250.0,
+        350.0, 300.0, 220.0, 150.0,
+        120.0, 90.0, 60.0, 30.0,
+        0.0,
+    )
+    # 对方候选点（对方下一手用它）：我是先手可抢先占/堵 → 单杀点按"逼应"级计，
+    # 而不是-1000；仅当对方 kill 级点 ≥2（双杀/活四成型）才无解。
+    OPP_SUB_VALUE = (
+        400.0, 380.0, 450.0, 430.0, 400.0,
+        250.0, 200.0, 160.0, 120.0,
+        200.0, 160.0, 120.0, 80.0,
+        60.0, 45.0, 30.0, 15.0,
+        0.0,
+    )
+    OPP_KILL_UNSOLVABLE = -920.0   # 对方 kill 级点 ≥2 → 无解（防不住）
+    STALE_CLAMP = 500.0            # 常规威胁对比的 clamp（第一档大分不纳入）
+    PRUNE_W = 0.02                 # 剪枝阈值：分支绝对路径权重低于此值不往下推（至少保留最强一支）
+    GEAR_OPP_COEF = {1: 1.2, 2: 1.1, 3: 1.0, 4: 0.9}  # 攻防档位：偏防放大对方威胁
+    THREAT_BONUS_WHITE = 100.0   # （遗留常量，不再用于叶子分）
+    THREAT_BONUS_BLACK = 50.0    # （遗留常量，不再用于叶子分）
 
     def __init__(self, search):
         self.search = search        # Search 实例：候选点来源
-        self.use_nn = True          # 是否使用神经网络叶子评估（eval 时可按实例关闭）
+        self.use_nn = False         # 暂时停用所有神经网络：默认纯算法叶子评估（显式传参可开启）
         self.collect_samples = False  # 是否收集深推叶子分支样本
         self.samples = []             # 收集到的 (ctx_list, label)
         self.model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'nn', 'value.pt')  # 叶子 NN 模型路径（可切换）
         self._nn_model = None         # 已加载的 NN 模型缓存
+        self._nn_load_tried = False   # 加载失败后不在每个叶子重复尝试
+        self._nn_unavailable_reason = None
+        self.reset_leaf_eval_stats()
+
+    def reset_leaf_eval_stats(self):
+        """重置本次决策的叶子评估统计，供界面展示实际使用路径。"""
+        self.leaf_eval_stats = {
+            'nn': 0,
+            'heuristic': 0,
+            'total': 0,
+            'reason': None,
+        }
+
+    def leaf_eval_status(self):
+        """返回本次决策的叶子评估状态快照。"""
+        out = dict(self.leaf_eval_stats)
+        if out['nn'] and out['heuristic']:
+            out['mode'] = 'mixed'
+        elif out['nn']:
+            out['mode'] = 'neural'
+        elif out['heuristic']:
+            out['mode'] = 'heuristic'
+        else:
+            out['mode'] = 'not_triggered'
+        return out
 
     # ---------- 基础工具 ----------
 
@@ -76,29 +138,71 @@ class DeepSearch:
         return DeepSearch.DT_M * (x ** DeepSearch.DT_POW) + DeepSearch.DT_N
 
     @staticmethod
-    def _threat_counts(branch):
-        """分开统计黑白双方的高威胁步数（w≥90：0 级必杀/1 级威胁）。
-        返回 (white_threats, black_threats)。"""
-        wt = sum(1 for (_r, _c, p, w) in branch if p == WHITE and w >= 90)
-        bt = sum(1 for (_r, _c, p, w) in branch if p == BLACK and w >= 90)
-        return wt, bt
+    def _step_quality(w, cand_ws):
+        """单步路径质量 = 该步候选分 / 当步最高候选分（走最优候选 → 1.0）。"""
+        top = max(cand_ws) if cand_ws else 0.0
+        if top <= 0:
+            return 1.0
+        return min(1.0, float(w) / top)
 
     @staticmethod
-    def _stale_score(branch, player):
-        """僵持过程分：以 player 视角计分。
-        我方威胁步贡献 THREAT_BONUS_WHITE，对方威胁步贡献 -THREAT_BONUS_BLACK，
-        我方潜力步（w<90）贡献 10。机机对战中黑白对称。"""
-        total = 0.0
-        for (_r, _c, p, w) in branch:
-            if p == player:
-                if w >= 90:
-                    total += DeepSearch.THREAT_BONUS_WHITE
-                else:
-                    total += 10.0       # 2 潜力
+    def _weighted_average(items):
+        """按路径权重累加（不归一化）：items = [(w, value), ...]。
+        权重 = 路径质量连乘（全程最优 → 1.0），走差分支贡献按 W 缩水；
+        深层 W 连乘趋近 0 → 贡献自然衰减，无需除以 ΣW。"""
+        return sum(w * v for w, v in items)
+
+    def _prune_branches(self, branches):
+        """分支剪枝：branches = [(abs_weight, ...)]，绝对路径权重低于 PRUNE_W 剔除；
+        至少保留权重最大的一支（防止整层被剪空）。深层权重 = 连乘衰减，
+        因此到一定深度弱分支自然被剪，树宽收敛。"""
+        if not branches:
+            return []
+        total = sum(b[0] for b in branches)
+        if total <= 0:
+            return branches
+        kept = [b for b in branches if b[0] >= self.PRUNE_W]
+        if not kept:
+            kept = [max(branches, key=lambda b: b[0])]
+        return kept
+
+    def _sub_at(self, player, r, c):
+        """当前状态表中 (r,c) 的 18 子类编号（该方若在此落子会形成什么）。"""
+        state = self.search.sb if player == BLACK else self.search.sw
+        return state[r][c]
+
+    def _stale_result_score(self, ctx_seq, player):
+        """18 棋型结果分（纯终局判定，输入 = NN 路径上下文，不重扫盘面）：
+        从 ctx_seq（每步含 camp / cand_sub_ids）取【最近的】我方一步与对方一步
+        的候选子类，作为叶子局面的双方威胁结构：
+          - 我方最近 camp=1 步的 cand_sub_ids → 我方候选子类（排名序）；
+          - 对方最近 camp=0 步的 cand_sub_ids → 对方候选子类（排名序）。
+        - 我方任意 kill 级点（0-4）→ 先手必胜/必胜结构 → +650~+900；
+        - 对方 kill 级点 ≥2 → 双杀/活四成型，防不住 → -920；
+        - 对方 kill 级点 ==1 → 我先手可占掉，按"逼应"级计入常规对比；
+        - 无 kill → 常规威胁对比（SUB_VALUE × RANK_W 排名加权 × gear），clamp ±500。"""
+        my_subs = []
+        opp_subs = []
+        for ctx in reversed(ctx_seq):
+            subs = list(ctx.get('cand_sub_ids') or [])
+            if ctx.get('camp') == 1:
+                if not my_subs:
+                    my_subs = subs
             else:
-                if w >= 90:
-                    total -= DeepSearch.THREAT_BONUS_BLACK
-        return total
+                if not opp_subs:
+                    opp_subs = subs
+        my_kill = [s for s in my_subs if s <= 4]
+        if my_kill:
+            return max(self.MY_SUB_VALUE[s] for s in my_kill)
+        opp_kill = [s for s in opp_subs if s <= 4]
+        if len(opp_kill) >= 2:
+            return self.OPP_KILL_UNSOLVABLE
+        my_v = sum(self.MY_SUB_VALUE[s] * self.RANK_W[k] for k, s in enumerate(my_subs[:5]))
+        opp_v = sum(self.OPP_SUB_VALUE[s] * self.RANK_W[k] for k, s in enumerate(opp_subs[:5]))
+        gear = ctx_seq[-1].get('gear', 3) if ctx_seq else 3
+        opp_v *= self.GEAR_OPP_COEF.get(gear, 1.0)
+        v = my_v - opp_v
+        return max(-self.STALE_CLAMP, min(self.STALE_CLAMP, v))
 
     def _rollout(self, board, player, max_moves=10):
         """随机下到终局，返回 player 视角的胜负（1/-1/0）。
@@ -127,33 +231,55 @@ class DeepSearch:
             # 标签由对局结束后真实胜负回传（强化学习式）
             self.samples.append((list(ctx_branch), player, status))
 
-        wt, bt = self._threat_counts(branch)
-        my_t = wt if player == WHITE else bt
-        opp_t = bt if player == WHITE else wt
         if status == 'win':
-            return self.WIN_SCORE + self.THREAT_BONUS_WHITE * my_t - self.THREAT_BONUS_BLACK * opp_t
+            return self.WIN_SCORE
         if status == 'lose':
-            return -self.WIN_SCORE - self.THREAT_BONUS_BLACK * opp_t + self.THREAT_BONUS_WHITE * my_t
+            return -self.WIN_SCORE
+        self.leaf_eval_stats['total'] += 1
         nn_score = self._nn_score(ctx_branch)
         if nn_score is not None:
+            self.leaf_eval_stats['nn'] += 1
             # NN 输出约 [-1,1]，缩放到与胜负分(WIN_SCORE≈1000)同量级
             return nn_score * self.WIN_SCORE
-        return self._stale_score(branch, player)
+        self.leaf_eval_stats['heuristic'] += 1
+        if self.leaf_eval_stats['reason'] is None:
+            self.leaf_eval_stats['reason'] = self._nn_unavailable_reason or (
+                '已关闭' if not self.use_nn else '神经网络不可用')
+        return self._stale_result_score(ctx_branch, player)
 
     def _nn_score(self, ctx_branch):
         """用神经网络评估分支路线分数；模型不可用/未训练/被禁用时返回 None。"""
-        if not self.use_nn or not ctx_branch:
+        if not self.use_nn:
+            self._nn_unavailable_reason = '已关闭'
             return None
-        try:
-            import torch
-            from gomoku.nn.features import branch_matrix
-            from gomoku.nn.model import BranchValueNet
-            if self._nn_model is None:
+        if not ctx_branch:
+            self._nn_unavailable_reason = '无分支特征'
+            return None
+        if self._nn_model is None:
+            if self._nn_load_tried:
+                return None
+            self._nn_load_tried = True
+            try:
+                import torch
+                from gomoku.nn.model import BranchValueNet
                 model = BranchValueNet()
                 model.load_state_dict(torch.load(
                     self.model_path, map_location='cpu', weights_only=True))
                 model.eval()
                 self._nn_model = model
+                self._nn_unavailable_reason = None
+            except ImportError:
+                self._nn_unavailable_reason = '缺少 PyTorch/NumPy'
+                return None
+            except FileNotFoundError:
+                self._nn_unavailable_reason = '模型文件不存在'
+                return None
+            except Exception:
+                self._nn_unavailable_reason = '模型加载失败'
+                return None
+        try:
+            import torch
+            from gomoku.nn.features import branch_matrix
             matrix, length = branch_matrix(ctx_branch)
             x = torch.tensor(matrix, dtype=torch.float32).unsqueeze(0)   # [1,T,16]
             lengths = torch.tensor([length], dtype=torch.long)
@@ -161,15 +287,25 @@ class DeepSearch:
                 score = self._nn_model(x, lengths).item()
             return score
         except Exception:
+            self._nn_unavailable_reason = '模型推理失败'
+            self._nn_model = None
             return None
 
     # ---------- 候选点展开（供推演层） ----------
 
-    def _candidate_points(self, board, player, n=5):
+    def _candidate_points(self, board, player, n=5, plies=0):
         """当前 player 的候选点（带权重），供推演层展开：
         与顶层共用强制攻防优先级；普通候选为 3攻2防，使用真实综合分。
         战术及普通候选均最多取 n 个（默认 5）。
+        plies：当前分支已落子数（0=根层），用于「越深越窄」：
+          回合数 = plies//2；>= NARROW_ROUNDS → 最多 CAND_N_MID 个；
+          >= HARD_NARROW_ROUNDS → 最多 CAND_N_DEEP 个。
         返回 [(r, c, w), ...]。权重同时用于温度分配与叶子过程分。"""
+        rounds = plies // 2
+        if rounds >= self.HARD_NARROW_ROUNDS:
+            n = min(n, self.CAND_N_DEEP)
+        elif rounds >= self.NARROW_ROUNDS:
+            n = min(n, self.CAND_N_MID)
         reason, tactical = self.search.tactical_candidates(board, player)
         if reason:
             # 保留现有候选顺序及权重，限制递归分支数量。
@@ -182,8 +318,10 @@ class DeepSearch:
         w_lst = [(r, c, min(max(float(w), 1.0), 100.0)) for (r, c, w) in fb[:n]]
         return w_lst
 
-    def _make_ctx(self, board, player, main_player, w, cand_ws):
-        """构造一步上下文（供神经网络分支矩阵特征使用）。"""
+    def _make_ctx(self, board, player, main_player, w, cand_ws, cand_pts=None, temp=None, depth=None):
+        """构造一步上下文（神经网络分支矩阵特征/叶子结果分的完整输入，8 字段）。
+        cand_pts：与 cand_ws 对位的候选点 [(r,c,w)]（用于按状态表取 18 子类）。
+        temp/depth：该步的剩余温度与已推层数。"""
         cand_ws = [float(x) for x in (cand_ws or [])]
         kill = any(cw >= 100 for cw in cand_ws)
         gear = 0 if kill else self.search._target_gear(board, player)
@@ -191,13 +329,17 @@ class DeepSearch:
             'camp': 1 if player == main_player else 0,
             'move_w': float(w),
             'cand_ws': cand_ws,
+            # 与 cand_ws 对位的候选 18 子类（状态表直查 O(1)，不重扫棋型）
+            'cand_sub_ids': [self._sub_at(player, r, c) for (r, c, _w) in (cand_pts or [])],
+            'temp': float(temp) if temp is not None else None,
+            'depth': int(depth) if depth is not None else None,
             'kill': 1 if kill else 0,
             'gear': gear,
         }
 
     # ---------- 递归推演 ----------
 
-    def _recursive(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0):
+    def _recursive(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0, path_w=1.0):
         """递归推演：player 落一子（候选）→ opp 应一手 → 递归下一层。
         一层 = 双方完整回合；回合后温度耗尽则进行叶子评估。
         模拟落子后同步更新状态表（journal 哈希表回滚），保证候选点/必杀检测
@@ -209,13 +351,23 @@ class DeepSearch:
         key = tuple((r, c) for (r, c, _p, _w) in branch)
         if key in cache:
             return cache[key]
-        best = -1e9
-        cands = self._candidate_points(board, player, 5)
+        cands = self._candidate_points(board, player, 5, plies=len(branch))
+        if not cands:
+            cache[key] = 0.0
+            return 0.0
         cand_ws = [x[2] for x in cands]
+        # 我方候选分支：绝对路径权重 = path_w × 本步质量（深层连乘衰减 → 自动剪弱枝）
+        raw = []
         for (r, c, w) in cands:
+            q = self._step_quality(w, cand_ws)
+            raw.append((path_w * q, r, c, w))
+        kept = self._prune_branches(raw)
+        weighted = []
+        for (q, r, c, w) in kept:
             if board[r][c] != EMPTY:
                 continue
-            ctx = self._make_ctx(board, player, main_player, w, cand_ws)
+            ctx = self._make_ctx(board, player, main_player, w, cand_ws,
+                                 cand_pts=cands, temp=temp, depth=len(branch))
             board[r][c] = player
             branch.append((r, c, player, w))
             ctx_branch.append(ctx)
@@ -230,17 +382,24 @@ class DeepSearch:
                     print('  ' * indent + '   -> WIN %g' % score)
             else:
                 # 黑方候选逻辑与白方完全一致：有 0 级先取 0 级，否则 fallback top5
-                opp_pts = self._candidate_points(board, opp, 5)
+                opp_pts = self._candidate_points(board, opp, 5, plies=len(branch))
                 if not opp_pts:
                     score = self._leaf_score(board, branch, 'stale', player, ctx_branch)
                 else:
                     opp_cand_ws = [x[2] for x in opp_pts]
-                    worst = 1e9
+                    # 对方应手分支：绝对路径权重 = path_w × q × oq（连乘衰减）
+                    opp_raw = []
                     for (or_, oc, ow) in opp_pts:
+                        oq = self._step_quality(ow, opp_cand_ws)
+                        opp_raw.append((path_w * q * oq, or_, oc, ow))
+                    opp_kept = self._prune_branches(opp_raw)
+                    opp_weighted = []
+                    for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
                         temp2 = temp - self._dt(w) - self._dt(ow)
-                        ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws)
+                        ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
+                                               cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         board[or_][oc] = opp
                         branch.append((or_, oc, opp, ow))
                         ctx_branch.append(ctx_b)
@@ -255,24 +414,23 @@ class DeepSearch:
                             if trace:
                                 print('  ' * indent + '   -> 温度尽(t=%g<dt=%g) leaf=%g' % (temp2 + self._dt(w), self._dt(w), child))
                         else:
-                            child = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, indent + 1)
+                            child = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, indent + 1, path_w=path_w * q * oq)
                         self.search.restore(j_b)
                         branch.pop()
                         ctx_branch.pop()
                         board[or_][oc] = EMPTY
-                        if child < worst:
-                            worst = child
-                    score = worst
+                        opp_weighted.append((path_w * q * oq, child))
+                    score = self._weighted_average(opp_weighted)
             self.search.restore(j_w)
             branch.pop()
             ctx_branch.pop()
             board[r][c] = EMPTY
             if trace:
                 print('  ' * indent + '    branch=%g' % score)
-            if score > best:
-                best = score
-        cache[key] = best
-        return best
+            weighted.append((path_w * q, score))
+        val = self._weighted_average(weighted)
+        cache[key] = val
+        return val
 
     def deep_search(self, board, points, player, trace=False):
         """温度银行深度推演入口：对候选点逐一开始推演，返回分支分最高的 (r, c)。
@@ -290,6 +448,7 @@ class DeepSearch:
         [{'r': r, 'c': c, 'score': val}, ...]——全返回、不截断、分数直接暴露原始值。
         已占格跳过（不打分）；空候选返回 []。
         供 analyze_turn 输出全部候选及分数（决策网络输入层的数据源）。"""
+        self.reset_leaf_eval_stats()
         if isinstance(points, dict):
             cands = list(points.keys())
         elif isinstance(points, list):
@@ -308,8 +467,10 @@ class DeepSearch:
             if board[r][c] != EMPTY:
                 continue
             w = points.get((r, c), 60.0) if isinstance(points, dict) else 60.0
-            cand_ws = [x[2] for x in self._candidate_points(board, player, 5)]
-            ctx = self._make_ctx(board, player, main_player, w, cand_ws)
+            root_cands = self._candidate_points(board, player, 5)
+            cand_ws = [x[2] for x in root_cands]
+            ctx = self._make_ctx(board, player, main_player, w, cand_ws,
+                                 cand_pts=root_cands, temp=self.T0, depth=0)
             board[r][c] = player
             branch = [(r, c, player, w)]
             ctx_branch = [ctx]
@@ -323,17 +484,24 @@ class DeepSearch:
                     print('   -> direct WIN %g' % val)
             else:
                 # 黑方候选逻辑与白方完全一致：有 0 级先取 0 级，否则 fallback top5
-                opp_pts = self._candidate_points(board, opp, 5)
+                opp_pts = self._candidate_points(board, opp, 5, plies=len(branch))
                 if not opp_pts:
                     val = self._leaf_score(board, branch, 'stale', player, ctx_branch)
                 else:
                     opp_cand_ws = [x[2] for x in opp_pts]
-                    worst = 1e9
+                    # 对方应手分支：按路径质量权重剪枝 + 加权求和（替代 min）
+                    opp_raw = []
                     for (or_, oc, ow) in opp_pts:
+                        oq = self._step_quality(ow, opp_cand_ws)
+                        opp_raw.append((oq, or_, oc, ow))
+                    opp_kept = self._prune_branches(opp_raw)
+                    opp_weighted = []
+                    for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
                         temp2 = self.T0 - self._dt(w) - self._dt(ow)
-                        ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws)
+                        ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
+                                               cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         board[or_][oc] = opp
                         branch.append((or_, oc, opp, ow))
                         ctx_branch.append(ctx_b)
@@ -351,9 +519,8 @@ class DeepSearch:
                         branch.pop()
                         ctx_branch.pop()
                         board[or_][oc] = EMPTY
-                        if child < worst:
-                            worst = child
-                    val = worst
+                        opp_weighted.append((oq, child))
+                    val = self._weighted_average(opp_weighted)
             self.search.restore(j_w)
             branch.pop()
             ctx_branch.pop()

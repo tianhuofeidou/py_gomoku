@@ -73,7 +73,7 @@ def main():
             out = s.ai_play()
             if out:
                 (r, c), ranked, net = out
-                print('AI 落子 %s%d%s' % (COLUMNS[c], r + 1, ' [决策网络]' if net else ' [纯算法]'))
+                print('AI 落子 %s%d [纯算法]' % (COLUMNS[c], r + 1))
             continue
         tok = input('你走（如 h8，u=悔棋，q=退出）> ').strip().lower()
         if tok == 'q':
@@ -101,7 +101,7 @@ def main():
         out = s.ai_play()
         if out:
             (ar, ac), ranked, net = out
-            print('AI 落子 %s%d%s' % (COLUMNS[ac], ar + 1, ' [决策网络]' if net else ' [纯算法]'))
+            print('AI 落子 %s%d [纯算法]' % (COLUMNS[ac], ar + 1))
 
 
 if __name__ == '__main__':

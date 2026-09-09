@@ -33,12 +33,11 @@ def load_ga_params():
         pass
 
 
-def create_engine(use_decision_net=None):
-    """新会话拥有独立引擎，所有运行入口使用同一配置。"""
+def create_engine(use_decision_net=False):
+    """新会话拥有独立引擎，所有运行入口使用同一配置。
+    暂定：默认纯算法（决策网络停用），不再读取 DSH_GOMOKU_USE_NET。"""
     load_ga_params()
-    if use_decision_net is None:
-        use_decision_net = os.environ.get('DSH_GOMOKU_USE_NET') == '1'
-    return Engine(use_decision_net=use_decision_net)
+    return Engine(use_decision_net=bool(use_decision_net))
 
 
 def get_engine(use_decision_net=None):
@@ -59,6 +58,8 @@ def ai_move(board, moves, player, engine=None):
     if engine is None:
         engine = get_engine()
         engine.reset(moves)
+    # 开局特例不会进入 Engine.analyze_turn，仍需清空上一手的显示统计。
+    engine.deep_search.reset_leaf_eval_stats()
     if player not in (BLACK, WHITE):
         raise ValueError('bad player')
     if not any(EMPTY in row for row in board):

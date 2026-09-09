@@ -288,11 +288,17 @@ def _seed_global_memory_from_games():
         if not g or not getattr(g, 'history', None):
             continue
         for h in g.history:
-            if h and h.get('winner') == 0:
+            if not h or h.get('winner') is None:
+                continue
+            # 按该局的人方记录归属（与 record_result 一致）：
+            # 人执白、AI 执黑时，白方获胜是 AI 败，不能按颜色写死成胜。
+            hp = h.get('humanPlayer', BLACK)
+            ai = BLACK if hp == WHITE else WHITE
+            if h['winner'] == 0:
                 gm['totals']['draws'] += 1
-            elif h and h.get('winner') == WHITE:
+            elif h['winner'] == ai:
                 gm['totals']['wins'] += 1
-            elif h and h.get('winner') == BLACK:
+            elif h['winner'] == hp:
                 gm['totals']['losses'] += 1
             changed = True
     if changed:

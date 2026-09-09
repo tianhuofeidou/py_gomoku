@@ -7,7 +7,7 @@
 功能（对照插件 lib/ui + server 还原）：
   - 三种模式：人机(ai) / 人人(pvp) / 机机(vs)
   - 人机可换边：人类执黑先手 或 人类执白后手
-  - 引擎（纯算法 + 可选决策网络）自动落子，并展示推荐全候选
+  - 引擎（纯算法）自动落子，并展示推荐全候选
   - 悔棋 / 认输 / 求和 / 新对局
   - 对局结束立即可见；胜负自动写入全局记忆（totals/lossByType/badLines/goodLines）
 """
@@ -24,10 +24,12 @@ from gomoku.core.deep_search import DeepSearch
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
 
 # AI 棋力档位：(名称, 温度预算 T0, 说明)——玩家语言，不暴露温度概念
+# 本机实测（24 个 KataGo 中盘开局，纯算法，含剪枝）：
+#   80→avg 0.17s(最慢 0.7s) / 160→avg 2.2s(最慢 12s) / 240→avg 10s(最慢 38s)。
 TEMP_LEVELS = [
-    ('轻快', 160, '约 1s/手'),
-    ('标准', 240, '约 1~2s/手'),
-    ('认真', 320, '约 2~3s/手'),
+    ('轻快', 80, '约 0.2s/手'),
+    ('标准', 160, '约 2s/手（复杂局面可达 12s）'),
+    ('认真', 240, '约 10s/手（复杂局面可达 38s）'),
 ]
 
 
@@ -40,6 +42,9 @@ class GomokuApp:
         self.root = root
         self.root.title('五子棋 · 独立版（gomoku）')
         self.session = PlaySession('local')
+        # 默认纯算法（神经网络已全局停用）
+        self.session.engine.use_decision_net = False
+        self.session.engine.deep_search.use_nn = False
         self.last_move = None
         self.ai_thinking = False
         self._build_ui()
@@ -78,8 +83,16 @@ class GomokuApp:
                             variable=self.temp_var,
                             command=self._on_temp_change).grid(row=17 + i, column=0, sticky='w')
 
+        ttk.Separator(panel, orient='horizontal').grid(row=20, column=0, sticky='ew', pady=(8, 5))
+        self.leaf_eval_var = tk.StringVar(value='叶子评估：尚未触发')
+        self.decision_eval_var = tk.StringVar(value='决策选点：纯算法')
+        ttk.Label(panel, textvariable=self.leaf_eval_var, justify=tk.LEFT,
+                  wraplength=210).grid(row=21, column=0, sticky='w')
+        ttk.Label(panel, textvariable=self.decision_eval_var, justify=tk.LEFT,
+                  wraplength=210).grid(row=22, column=0, sticky='w')
+
         self.turn_label = ttk.Label(panel, text='', justify=tk.LEFT, wraplength=210)
-        self.turn_label.grid(row=21, column=0, sticky='w', pady=8)
+        self.turn_label.grid(row=23, column=0, sticky='w', pady=8)
 
         self.info = tk.Text(self.root, width=38, height=26, state=tk.DISABLED)
         self.info.pack(side=tk.LEFT, fill=tk.Y)
@@ -168,7 +181,7 @@ class GomokuApp:
 
     def _ai_calc(self, player):
         """AI 计算（在子线程执行，纯计算不碰 tkinter）。
-        返回 (player, (r,c), ranked, net_used, 耗时秒)；无棋可走返回 None。"""
+        返回 (player, (r,c), ranked, net_used, leaf_status, 耗时秒)；无棋可走返回 None。"""
         game = self.session.game
         if game.winner is not None:
             return None
@@ -177,7 +190,8 @@ class GomokuApp:
         if not out:
             return None
         (r, c), ranked, net_used = out
-        return player, (r, c), ranked, net_used, time.perf_counter() - t0
+        leaf_status = self.session.engine.deep_search.leaf_eval_status()
+        return player, (r, c), ranked, net_used, leaf_status, time.perf_counter() - t0
 
     @staticmethod
     def _fmt_score(s):
@@ -186,10 +200,20 @@ class GomokuApp:
 
     def _ai_apply(self, calc):
         """AI 计算结果上屏（主线程）：落子标记 + 结构化候选打分。"""
-        player, (r, c), ranked, net_used, dt = calc
+        player, (r, c), ranked, net_used, leaf_status, dt = calc
         self.last_move = (r, c)
         who = '黑' if player == BLACK else '白'
-        tag = ' [决策网络]' if net_used else ''
+        mode = leaf_status.get('mode')
+        total = leaf_status.get('total', 0)
+        if mode == 'not_triggered':
+            leaf_text = '未触发（无需叶子估值）'
+            leaf_tag = ' [叶子未触发]'
+        else:
+            leaf_text = '纯算法（%d 个叶子）' % total
+            leaf_tag = ' [纯算法 %d]' % total
+        self.leaf_eval_var.set('叶子评估：' + leaf_text)
+        self.decision_eval_var.set('决策选点：纯算法')
+        tag = leaf_tag
         self._log('【%s】AI 思考 %.1fs → 落子 %s%d%s' % (who, dt, COLUMNS[c], r + 1, tag))
         if ranked and len(ranked) > 1:
             lines = []
@@ -201,11 +225,13 @@ class GomokuApp:
 
     def _run_ai(self, fn):
         """后台线程跑 AI（fn 为纯计算），主线程保持响应不冻结；
-        完成后回到主线程画盘收尾。思考期间点棋/按钮被 ai_thinking 保护拦下。"""
+        完成后回到主线程画盘收尾。思考期间点棋/按钮被 ai_thinking 保护拦下；
+        状态栏实时显示已思考秒数（0.1s 刷新），落子后日志记录总耗时。"""
         if self.ai_thinking:
             return
         self.ai_thinking = True
-        self.turn_label['text'] = '思考中…'
+        self._ai_start = time.perf_counter()
+        self.turn_label['text'] = '🤔 思考中… 0.0s'
         self.root.update_idletasks()
         box = {}
 
@@ -228,6 +254,8 @@ class GomokuApp:
                     self._ai_apply(calc)
                 self._refresh()
                 return
+            # 实时刷新思考秒数（不创建新线程，仅更新 label）
+            self.turn_label['text'] = '🤔 思考中… %.1fs' % (time.perf_counter() - self._ai_start)
             self.root.after(50, poll)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -252,6 +280,8 @@ class GomokuApp:
         mode = mode or self.mode_var.get()
         self.session.reset(mode=mode, human_player=hp)
         self.last_move = None
+        self.leaf_eval_var.set('叶子评估：尚未触发')
+        self.decision_eval_var.set('决策选点：纯算法')
         self._log('新对局 · %s · 人类执%s%s' % (MODE_LABEL[mode], '黑' if hp == BLACK else '白',
                                               '' if mode != 'ai' else '，AI=' + ('白' if hp == BLACK else '黑')))
         game = self.session.game
@@ -325,9 +355,9 @@ class GomokuApp:
             self.turn_label['text'] = self._end_text() + '（点「新对局」重来）'
         elif g.mode == 'ai':
             who = '你' if g.is_human_turn() else 'AI'
-            self.turn_label['text'] = '轮到 %s · %s' % (who, '黑' if g.current_player() == BLACK else '白')
+            self.turn_label['text'] = '🎯 轮到 %s · %s' % (who, '黑' if g.current_player() == BLACK else '白')
         else:
-            self.turn_label['text'] = '轮到 %s' % ('黑' if g.current_player() == BLACK else '白')
+            self.turn_label['text'] = '🎯 轮到 %s' % ('黑' if g.current_player() == BLACK else '白')
 
 
     def _show_memory(self):

@@ -133,6 +133,8 @@ class Engine:
              searched（候选 ≥2）→ 全部候选逐个深推打分，ranked 全返回。
         """
         self.decision_net_used = False
+        # 直取分支不会进入 rank_candidates，也要清掉上一手的叶子统计。
+        self.deep_search.reset_leaf_eval_stats()
         opp_state = self.search.sw if player == BLACK else self.search.sb
         my_state = self.search.sb if player == BLACK else self.search.sw
         result = {

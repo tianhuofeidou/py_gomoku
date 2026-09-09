@@ -33,10 +33,11 @@ gomoku/data/eval_rl50.log
 gomoku/data/ga_ckpt.json
 gomoku/data/ga_deep_*.json
 
-# 模型权重（训练产物，不提交；引擎无权重时自动回退纯算法）
-# 例外：value.pt 为叶子评估正式模型，入库（GitHub 版开箱可用 NN 叶子）
-gomoku/nn/*.pt
-!gomoku/nn/value.pt
+# 神经网络部分：本地实验保留，GitHub 版一律不带（当前为纯算法引擎）
+gomoku/nn/
+gomoku/core/evaluate.py
+gomoku/tools/annotate_candidates.py
+gomoku/tools/save_annotation.py
 
 # 本地存储
 storages/
