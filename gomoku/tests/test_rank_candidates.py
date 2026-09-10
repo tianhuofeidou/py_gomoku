@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """候选点打分回归测试（定稿规则：候选>1 必须深推逐个打分、全返回+原始分；
 唯一候选不深推、给超大分 1e9）。"""
 import unittest
@@ -44,8 +44,8 @@ class RankCandidatesTest(unittest.TestCase):
         self.assertEqual(r4['type'], 'searched')
         ranked = r4['ranked']
         self.assertTrue(len(ranked) >= 2, '普通局面候选应 ≥2')
-        scores = [x['score'] for x in ranked]
-        self.assertEqual(scores, sorted(scores, reverse=True), '分数应降序')
+        keys = [e.deep_search._pick_key_state(x.get('state'), x['score']) for x in ranked]
+        self.assertEqual(keys, sorted(keys, reverse=True), '应按状态档位+候选分降序')
         self.assertEqual(r4['move'], (ranked[0]['r'], ranked[0]['c']))
         for x in ranked:
             self.assertEqual(b[x['r']][x['c']], 0, '候选点应为空位')
@@ -59,6 +59,24 @@ class RankCandidatesTest(unittest.TestCase):
         pt = e.deep_search.deep_search(b, cands, WHITE)
         ranked = e.deep_search.rank_candidates(b, cands, WHITE)
         self.assertEqual(pt, (ranked[0]['r'], ranked[0]['c']))
+
+    def test_candidates_have_discrete_state_fields(self):
+        """候选结果新增 5 态字段；旧 forced/fatal_ratio 仅作兼容，不参与排序。"""
+        e = Engine()
+        b = empty_board()
+        replay(e, b, [(7, 7, BLACK), (6, 6, WHITE), (5, 5, BLACK), (6, 8, WHITE)])
+        cands = [(5, 6), (6, 5), (7, 6), (6, 7), (5, 7)]
+        ranked = e.deep_search.rank_candidates(b, cands, WHITE)
+        self.assertTrue(ranked)
+        names = {'必胜', '存在必胜', '无', '存在必败', '必败'}
+        for x in ranked:
+            self.assertIn('forced', x)
+            self.assertIn('fatal_ratio', x)
+            self.assertIn(x['state'], (-2, -1, 0, 1, 2))
+            self.assertIn(x['state_name'], names)
+            self.assertIn(x['child_state'], ('none', 'exists_win', 'exists_lose'))
+            self.assertEqual(x['state_name'], e.deep_search._state_name(x['state']))
+            self.assertEqual(x['child_state'], e.deep_search._state_child_state(x['state']))
 
 
 if __name__ == '__main__':

@@ -11,6 +11,8 @@
   - 悔棋 / 认输 / 求和 / 新对局
   - 对局结束立即可见；胜负自动写入全局记忆（totals/lossByType/badLines/goodLines）
 """
+import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -22,6 +24,13 @@ from gomoku.session import PlaySession
 from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
+APP_TITLE = '棋逢小鲸 v1.2.0'
+
+
+def _resource_path(relative_path):
+    """返回源码运行或 PyInstaller 打包后的资源绝对路径。"""
+    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, relative_path)
 
 # AI 棋力档位：(名称, 温度预算 T0, 说明)——玩家语言，不暴露温度概念
 # 本机实测（24 个 KataGo 中盘开局，纯算法，含剪枝）：
@@ -37,10 +46,23 @@ class GomokuApp:
     CELL = 34
     MARGIN = 26
     SIZE = 15
+    # 5 态颜色：金色=硬必胜，绿色=存在必胜，橙色=存在必败，暗红=必败。
+    STATE_TAGS = {
+        '必胜': 'state_win',
+        '存在必胜': 'state_exists_win',
+        '无': 'state_none',
+        '存在必败': 'state_exists_lose',
+        '必败': 'state_lose',
+    }
 
     def __init__(self, root):
         self.root = root
-        self.root.title('五子棋 · 独立版（gomoku）')
+        self.root.title(APP_TITLE)
+        try:
+            self.root.iconbitmap(_resource_path(os.path.join('assets', 'icons', 'gomoku-ds.ico')))
+        except tk.TclError:
+            # 图标缺失不影响源码调试或正常对弈。
+            pass
         self.root.geometry('1120x780')      # 初始窗口；棋盘随窗口自适应缩放
         self.root.minsize(720, 560)
         self.session = PlaySession('local')
@@ -99,6 +121,11 @@ class GomokuApp:
         # 宽度按最长候选行预留，保证“序号 + 坐标 + 分数 + 选中/必胜标记”单行显示。
         self.info = tk.Text(self.root, width=50, height=26, state=tk.DISABLED)
         self.info.pack(side=tk.LEFT, fill=tk.Y)
+        self.info.tag_configure('state_win', foreground='#FFB300')
+        self.info.tag_configure('state_exists_win', foreground='#2E7D32')
+        self.info.tag_configure('state_none', foreground='#9E9E9E')
+        self.info.tag_configure('state_exists_lose', foreground='#EF6C00')
+        self.info.tag_configure('state_lose', foreground='#C62828')
 
         # 棋盘画布：填满剩余空间，格子尺寸随窗口动态计算（全屏自动放大）
         self.canvas = tk.Canvas(self.root, bg='#f2ecdf', highlightthickness=0)
@@ -254,21 +281,17 @@ class GomokuApp:
         tag = leaf_tag
         self._log('【%s】AI 思考 %.1fs → 落子 %s%d%s' % (who, dt, COLUMNS[c], r + 1, tag))
         if ranked and len(ranked) > 1:
-            lines = []
+            entries = []
             for i, x in enumerate(ranked[:5]):
                 mark = '   ← 选中' if (x['r'], x['c']) == (r, c) else ''
-                tag = ''
-                forced = x.get('forced', 0)
-                ratio = x.get('fatal_ratio', 0.0)
-                if forced == 1:
-                    tag = '  ⚔必胜'
-                elif forced == -1:
-                    tag = '  ⚔必败'
-                elif ratio:
-                    tag = '  ⚔胜败比%+.2f' % ratio
-                lines.append('  %d. %s%d  分 %s%s%s' % (i + 1, COLUMNS[x['c']], x['r'] + 1,
-                                                        self._fmt_score(x['score']), mark, tag))
-            self._log('候选打分：\n' + '\n'.join(lines))
+                state_name = x.get('state_name') or '无'
+                tag = '' if state_name == '无' else '  ⚔%s' % state_name
+                text = '  %d. %s%d  分 %s%s%s' % (i + 1, COLUMNS[x['c']], x['r'] + 1,
+                                                  self._fmt_score(x['score']), mark, tag)
+                entries.append((text, self.STATE_TAGS.get(state_name, 'state_none')))
+            self._log_candidates(entries)
+        if ranked and all(x.get('state') == -2 for x in ranked):
+            self._log_tagged('⚠ 全部候选均发现败势分支，局面高危', 'state_exists_lose')
 
     def _run_ai(self, fn):
         """后台线程跑 AI（fn 为纯计算），主线程保持响应不冻结；
@@ -384,6 +407,22 @@ class GomokuApp:
     def _log(self, text):
         self.info['state'] = tk.NORMAL
         self.info.insert(tk.END, text + '\n')
+        self.info.see(tk.END)
+        self.info['state'] = tk.DISABLED
+
+    def _log_tagged(self, text, tag_name):
+        """带颜色写入一条日志（tag_name 为 Text tag）。"""
+        self.info['state'] = tk.NORMAL
+        self.info.insert(tk.END, text + '\n', tag_name)
+        self.info.see(tk.END)
+        self.info['state'] = tk.DISABLED
+
+    def _log_candidates(self, entries):
+        """候选日志：按 5 态颜色写入；entries = [(text, tag_name), ...]。"""
+        self.info['state'] = tk.NORMAL
+        self.info.insert(tk.END, '候选打分：\n')
+        for text, tag_name in entries:
+            self.info.insert(tk.END, text + '\n', tag_name)
         self.info.see(tk.END)
         self.info['state'] = tk.DISABLED
 

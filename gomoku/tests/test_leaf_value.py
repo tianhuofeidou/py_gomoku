@@ -192,7 +192,7 @@ class FatalRatioTest(unittest.TestCase):
         with mock.patch.object(e.deep_search, '_candidate_points',
                                side_effect=fake_candidate_points), \
                 mock.patch.object(e.deep_search, '_recursive',
-                                  return_value=(0.0, 0, 2, 1, 10)):
+                                  return_value=(0.0, 0, 2, 1, 10, 0)):
             ranked = e.deep_search.rank_candidates(board, [root], BLACK)
 
         self.assertEqual(len(ranked), 1)
@@ -214,7 +214,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(r4['type'], 'searched')
         ranked = r4['ranked']
         self.assertTrue(len(ranked) >= 2)
-        keys = [e.deep_search._pick_key(x.get('forced', 0), x.get('fatal_ratio', 0.0), x['score'])
+        keys = [e.deep_search._pick_key_state(x.get('state'), x['score'])
                 for x in ranked]
         self.assertEqual(keys, sorted(keys, reverse=True))
         self.assertEqual(r4['move'], (ranked[0]['r'], ranked[0]['c']))
