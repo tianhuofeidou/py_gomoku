@@ -15,6 +15,15 @@ import argparse
 import sys
 from pathlib import Path
 
+# Windows CI 控制台默认可能是 cp1252；统一按 UTF-8 输出，避免打印中文时
+# 抛出 UnicodeEncodeError。旧 Python 没有 reconfigure 时保持原样。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 # 桌面引擎中需要复制到 Android 的顶层文件
 TOP_FILES = (
     '__init__.py',

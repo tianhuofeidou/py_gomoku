@@ -58,7 +58,15 @@ jobs:
 
       - name: Check embedded engine sync
         shell: pwsh
-        run: python scripts\sync_android_engine.py --check
+        run: |
+          $output = & python scripts\sync_android_engine.py --check 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $output
+          if ($code -ne 0) {
+            $annotation = $output -replace "`r?`n", "%0A"
+            Write-Output "::error::$annotation"
+            exit $code
+          }
 
       - name: Build debug APK
         shell: pwsh
@@ -71,8 +79,16 @@ jobs:
           $gradleArgs = @(':app:assembleDebug', '--no-configuration-cache', '--no-daemon')
           if ($env:APP_VERSION) { $gradleArgs += "-PversionName=$env:APP_VERSION" }
           if ($env:APP_VERSION_CODE) { $gradleArgs += "-PversionCode=$env:APP_VERSION_CODE" }
-          & .\gradlew.bat @gradleArgs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $output = & .\gradlew.bat @gradleArgs 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $output
+          if ($code -ne 0) {
+            $tail = ($output -split "`r?`n" | Select-Object -Last 120) -join "`n"
+            $annotation = $tail -replace "`r?`n", "%0A"
+            if ($annotation.Length -gt 60000) { $annotation = $annotation.Substring($annotation.Length - 60000) }
+            Write-Output "::error::$annotation"
+            exit $code
+          }
 
       - name: Verify APK metadata
         shell: pwsh
