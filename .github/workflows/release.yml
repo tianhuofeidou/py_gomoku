@@ -125,23 +125,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          if gh release view "$TAG" --json isDraft -q .isDraft >/dev/null 2>&1; then
-            if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" != "true" ]; then
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)" != "true" ]; then
               echo "release $TAG already published; refusing to modify it" >&2
               exit 1
             fi
           else
-            gh release create "$TAG" --draft --title "$TAG" --notes "棋逢小鲸 $TAG"
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "棋逢小鲸 $TAG"
           fi
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release upload "$TAG" release-assets/* --clobber
+        run: gh release upload "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release edit "$TAG" --draft=false
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
