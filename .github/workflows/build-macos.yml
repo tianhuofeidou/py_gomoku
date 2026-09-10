@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Release tag to build and attach
         required: true
-        default: v1.2.0
+        default: v1.2.1
   push:
     tags:
       - 'v*'
@@ -52,7 +52,7 @@ jobs:
       - name: Build app
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed \
-            --name "QifengXiaojing-v1.2.0" \
+            --name "QifengXiaojing-v1.2.1" \
             --icon app.icns \
             --add-data "assets:assets" \
             play.py
@@ -60,13 +60,13 @@ jobs:
       - name: Package app
         run: |
           cd dist
-          ditto -c -k --sequesterRsrc --keepParent "QifengXiaojing-v1.2.0.app" "QifengXiaojing-v1.2.0-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent "QifengXiaojing-v1.2.1.app" "QifengXiaojing-v1.2.1-macos.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QifengXiaojing-v1.2.0-macos
-          path: dist/QifengXiaojing-v1.2.0-macos.zip
+          name: QifengXiaojing-v1.2.1-macos
+          path: dist/QifengXiaojing-v1.2.1-macos.zip
 
       - name: Attach to release
         env:
@@ -76,4 +76,4 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$TAG" --notes "Qifeng Xiaojing $TAG"
           fi
-          gh release upload "$TAG" "dist/QifengXiaojing-v1.2.0-macos.zip" --clobber
+          gh release upload "$TAG" "dist/QifengXiaojing-v1.2.1-macos.zip" --clobber

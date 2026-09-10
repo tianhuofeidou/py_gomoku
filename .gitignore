@@ -6,6 +6,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# 打包产物：EXE/APK 只走 GitHub Releases，不入库
+build/
+dist/
+*.spec
+*.exe
+*.apk
+
 # IDE
 .idea/
 

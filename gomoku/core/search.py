@@ -816,13 +816,14 @@ class Search:
         0~100 综合分，供温度银行按候选质量分配推演深度（原实现只用于
         排序挑选、返回时丢弃，深推展开被硬编码 60，强弱点推得一样浅）。"""
         syms = self._board_symmetries(board)
-        def top_pts(state, player, n, exclude=()):
+        def top_pts(state, player, n, mode, exclude=()):
             pts = [(r, c) for r in range(SIZE) for c in range(SIZE)
                    if board[r][c] == EMPTY and (r, c) not in exclude
                    and SUBCLASS_PARENT[state[r][c]] in (THREAT, POTEN)]
             def score(p):
-                mode = 'dual' if self._dual_score(board, p[0], p[1]) > 0 else ('attack' if player == WHITE else 'defend')
-                return self._candidate_score(board, p[0], p[1], player, mode)
+                # 攻防一体点优先用 dual；否则按列表语义取 attack/defend。
+                m = 'dual' if self._dual_score(board, p[0], p[1]) > 0 else mode
+                return self._candidate_score(board, p[0], p[1], player, m)
             pts.sort(key=score, reverse=True)
             # 等效去重：对称轨道（严格）/棋型签名（近似），每类取最高分代表，
             # 防止同类型点（对称镜像/同棋型近邻）占满名额、漏掉其他类型。
@@ -850,12 +851,14 @@ class Search:
         else:
             attack_state, attack_player = self.sb, BLACK
             defend_state, defend_player = self.sw, WHITE
-        # 攻防 mode 已回退到修复前逻辑（黑攻用 defend 权重贴白、白防用 attack
-        # 权重——歪打正着使引擎黑白均衡；修复版导致引擎执黑防守名额不足、
-        # 黑白失衡、GA 参数寻优失效）。等效去重保留。
-        attack = top_pts(attack_state, attack_player, attack_n)
+        # 攻防模式按“列表语义”显式区分，黑白对称：
+        #   attack 列表用 attack 权重（自家棋型/连线优先，压对方 -10）；
+        #   defense 列表用 defend 权重（对方威胁分 + 靠近己方防守子）。
+        # 旧实现按 player==WHITE 硬编码模式，导致黑方进攻候选被当防守评分，
+        # 机机/黑方对局不主动造威胁；这里修正为按列表语义传参。
+        attack = top_pts(attack_state, attack_player, attack_n, 'attack')
         used = set(p[:2] for p in attack)
-        defend = top_pts(defend_state, defend_player, defend_n, exclude=used)
+        defend = top_pts(defend_state, defend_player, defend_n, 'defend', exclude=used)
         return attack + defend
 
     # ---------- 状态描述 ----------

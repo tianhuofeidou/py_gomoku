@@ -24,7 +24,7 @@ from gomoku.session import PlaySession
 from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.2.0'
+APP_TITLE = '棋逢小鲸 v1.2.1'
 
 
 def _resource_path(relative_path):

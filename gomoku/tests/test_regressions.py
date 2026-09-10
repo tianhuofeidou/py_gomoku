@@ -70,6 +70,32 @@ class RegressionTest(unittest.TestCase):
             self.assertEqual(e.deep_search._candidate_points(board, WHITE),
                              [(r, c, w) for (r, c), w in list(points.items())[:5]])
 
+    def test_fallback_attack_defense_modes_are_symmetric(self):
+        """黑白候选评分模式必须对称：进攻列表用 attack，防守列表用 defend。
+
+        旧实现按 player==WHITE 硬编码，黑方进攻候选会被按 defend 评分，
+        机机/黑方对局因此不主动造威胁。"""
+        board, e = self.board_engine(
+            [(5, c, BLACK) for c in (5, 6, 7)] +
+            [(9, c, WHITE) for c in (7, 8, 9)])
+        orig = e.search._candidate_score
+        calls = []
+
+        def spy(b, r, c, player, mode):
+            calls.append((player, mode))
+            return orig(b, r, c, player, mode)
+
+        with patch.object(e.search, '_dual_score', return_value=0.0), \
+                patch.object(e.search, '_candidate_score', side_effect=spy):
+            e.search._fallback(board, player=BLACK)
+        self.assertEqual(set(calls), {(BLACK, 'attack'), (WHITE, 'defend')})
+
+        calls.clear()
+        with patch.object(e.search, '_dual_score', return_value=0.0), \
+                patch.object(e.search, '_candidate_score', side_effect=spy):
+            e.search._fallback(board, player=WHITE)
+        self.assertEqual(set(calls), {(WHITE, 'attack'), (BLACK, 'defend')})
+
     def test_defense_candidates_include_threat_adjacent_gaps(self):
         """防守反推必须包含紧贴威胁点的缝位，不能被漏掉（F9/G9 回归）。"""
         moves = [(7, 7, BLACK), (6, 6, WHITE), (5, 5, BLACK), (5, 7, WHITE),
