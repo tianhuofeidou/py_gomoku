@@ -135,6 +135,32 @@ class PickKeyTest(unittest.TestCase):
         low = ds._pick_key(0, -0.6, 99999)     # 比例低者即使 score 再高也靠后
         self.assertGreater(high, low)
 
+    def test_non_positive_ratio_falls_back_to_candidate_score(self):
+        ds = Engine().deep_search
+        high_score = ds._pick_key(0, -0.9, 500)
+        low_score = ds._pick_key(0, 0.0, 100)
+        self.assertGreater(high_score, low_score)
+
+    def test_forced_loss_is_below_every_non_losing_candidate(self):
+        ds = Engine().deep_search
+        losing = ds._pick_key(-1, 1.0, 999999)
+        ordinary = ds._pick_key(0, -1.0, -999999)
+        self.assertGreater(ordinary, losing)
+
+
+class FatalMergeTest(unittest.TestCase):
+
+    def test_undecided_child_prevents_forced_loss(self):
+        ds = Engine().deep_search
+        self.assertEqual(ds._merge_fatal_states([-1, 0]), 0)
+        self.assertEqual(ds._merge_fatal_states([-1, 0, 0]), 0)
+
+    def test_forced_state_requires_node_level_condition(self):
+        ds = Engine().deep_search
+        self.assertEqual(ds._merge_fatal_states([1, 0]), 1)
+        self.assertEqual(ds._merge_fatal_states([-1, -1]), -1)
+        self.assertEqual(ds._merge_fatal_states([0, 0]), 0)
+
 
 class IntegrationTest(unittest.TestCase):
 

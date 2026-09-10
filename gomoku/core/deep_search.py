@@ -172,26 +172,25 @@ class DeepSearch:
 
     @staticmethod
     def _pick_key(forced, ratio, score):
-        """决策排序键（分层词典序，判定层与打分层错开）：
-        必胜(+1) 最高档 → 无判定(0) 中档 → 必败(-1) 最低档；
-        同档内按子树必胜必败判定节点比例 ratio 降序，再按 score 细分。"""
+        """决策排序键：根必胜 > 正胜败比 > 候选分 > 根必败。"""
         if forced == 1:
-            return (2, ratio, score)
+            return (3, 0.0, score)
         if forced == -1:
-            return (0, ratio, score)
-        return (1, ratio, score)
+            return (0, 0.0, score)
+        if ratio > 0:
+            return (2, ratio, score)
+        return (1, 0.0, score)
 
     @staticmethod
     def _merge_fatal_states(child_states):
         """合并同层子分支状态（已投影为当前决策方视角）：
         全部必败 → 当前节点必败；任一必胜 → 当前节点必胜；否则不确定。"""
-        decided = [s for s in child_states if s != 0]
-        if not decided:
+        if not child_states:
             return 0
-        if all(s == -1 for s in decided):
-            return -1
-        if any(s == 1 for s in decided):
+        if any(s == 1 for s in child_states):
             return 1
+        if all(s == -1 for s in child_states):
+            return -1
         return 0
 
     @staticmethod
@@ -638,12 +637,13 @@ class DeepSearch:
             branch.pop()
             ctx_branch.pop()
             board[r][c] = EMPTY
-            if root_state == 1:
-                cw += 1                      # 根候选层聚合判定节点
-            elif root_state == -1:
-                cl += 1
-            tot = cw + cl
-            ratio = (cw - cl) / float(tot) if tot else 0.0
+            # 必胜/必败只取候选根节点的聚合结论；根节点本身不重复计入比例。
+            # 只有根节点尚未定论时，才用子节点的胜败统计辅助排序。
+            if root_state == 0:
+                tot = cw + cl
+                ratio = (cw - cl) / float(tot) if tot else 0.0
+            else:
+                ratio = 0.0
             if trace:
                 print('   cand%s%d val=%g' % ('ABCDEFGHIJKLMNO'[c], r + 1, val))
             results.append({'r': r, 'c': c, 'score': val, 'forced': root_state,
