@@ -130,6 +130,7 @@ node --test gomoku/tests/test_plugin.cjs
 - 修改 Android 内嵌引擎后，必须运行 `python scripts/sync_android_engine.py --check`。
 - Android 产物发布前至少核对 `aapt2 dump badging` 的 versionCode/versionName/ABI 和 `apksigner verify`；有条件时在模拟器或真机安装启动。
 - Windows EXE 发布前必须核对包内 assets/GA 数据、确认未包含 `torch`/`numpy`/`gomoku.nn`，并做启动冒烟。
+- CI 失败时优先获取完整运行日志；需要临时诊断时使用临时分支，通过公开 annotation 或 step summary 暴露关键错误，修复后移除诊断改动。
 - 修改棋盘/状态表更新时，必须验证模拟深推后状态完全恢复。
 - 修改选点逻辑时，至少覆盖黑白双方、直接战术、多候选排序、未判定分支和必败兜底。
 - 修改 GUI 时，除自动化测试外应检查启动、窗口缩放、后台思考和候选显示；若未实际启动界面，要明确说明未做人工视觉验证。
@@ -146,6 +147,10 @@ node --test gomoku/tests/test_plugin.cjs
 - Android CI 使用 JDK 17、Android SDK 36、build-tools 36.0.0、Python 3.14；`CHAQUOPY_BUILD_PYTHON` 指向 CI 安装的 Python。
 - 发布资产命名：`Gomoku-QifengXiaojing-<tag>-win64.exe`、`Gomoku-QifengXiaojing-<tag>-debug.apk`、`QifengXiaojing-<tag>-macos.zip`。
 - 标签推送会触发统一 release 工作流；Release 必须等 Windows、macOS、Android 全部构建成功后才可正式发布，失败时只允许保留 draft。
+- 构建脚本必须跨平台：Windows runner 控制台按 UTF-8 输出；文本比较按 LF 归一化，不依赖 CRLF/LF。
+- CI 同步或校验不得依赖被 `.gitignore` 排除、只在本地存在的实验文件。
+- `publish` job 不执行 checkout 时，所有 `gh release` 命令必须显式指定 `--repo "$GITHUB_REPOSITORY"`。
+- Release 发布后必须核对三平台资产和 `SHA256SUMS.txt`；任一平台失败时只能保留 draft，不得发布不完整 Release。
 
 ## Git 与版本发布
 
@@ -160,6 +165,9 @@ node --test gomoku/tests/test_plugin.cjs
 - 发布时保持受 Git 跟踪的版本说明与标签一致。`package.json` 当前被忽略，不能强制加入仓库充当版本来源。
 - 标签使用 `vMAJOR.MINOR.PATCH` 格式并指向包含代码、测试和对应 README 的最终发布提交。
 - 已推送标签原则上不可改写。若刚发布的标签含有明确错误，必须向用户说明影响并获得明确授权后才能移动或强制更新。
+- 删除、移动或强制更新任何已推送标签前，必须逐项确认该标签没有 Release 或 Release 资产，并记录用户明确授权。
+- 失败、未发布 Release 的临时标签在获得授权后应清理，避免仓库中留下与正式发布无关的孤立标签。
+- 临时诊断分支和诊断改动在问题修复后应清理，不留在长期分支历史中。
 - 提交信息应准确描述变更，不把文档修改写成逻辑升级，也不把有限搜索结果宣传成已证明算法。
 
 ## 安全与删除操作
