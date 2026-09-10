@@ -3,6 +3,7 @@
 18 棋型结果分（_stale_result_score）、路径质量（_step_quality）、
 加权平均（_weighted_average）、剪枝（_prune_branches）、胜负叶恒值。"""
 import unittest
+from unittest import mock
 
 from gomoku.core.utils import empty_board, place, BLACK, WHITE
 from gomoku.core.engine import Engine
@@ -160,6 +161,45 @@ class FatalMergeTest(unittest.TestCase):
         self.assertEqual(ds._merge_fatal_states([1, 0]), 1)
         self.assertEqual(ds._merge_fatal_states([-1, -1]), -1)
         self.assertEqual(ds._merge_fatal_states([0, 0]), 0)
+
+
+class FatalRatioTest(unittest.TestCase):
+
+    def test_denominator_is_all_children(self):
+        """分母必须是全部子节点数，而不是仅胜败子节点数。"""
+        ds = Engine().deep_search
+        # 旧口径：1 / (2 + 1) ≈ 0.333；新口径：1 / 10 = 0.1
+        self.assertAlmostEqual(ds._fatal_ratio(2, 1, 10), 0.1)
+        self.assertAlmostEqual(ds._fatal_ratio(1, 0, 4), 0.25)
+
+    def test_zero_denominator_is_zero(self):
+        ds = Engine().deep_search
+        self.assertEqual(ds._fatal_ratio(0, 0, 0), 0.0)
+        self.assertEqual(ds._fatal_ratio(1, 0, 0), 0.0)
+
+    def test_root_ratio_counts_undecided_children(self):
+        """根节点比例用全部子节点做分母；未判定子节点也计入。"""
+        e = Engine()
+        e.deep_search.T0 = 160.0
+        board = empty_board()
+        root = (7, 7)
+
+        def fake_candidate_points(_board, player, n=5, plies=0):
+            if player == BLACK:
+                return [(7, 7, 60.0)]
+            return [(7, 8, 60.0)]
+
+        with mock.patch.object(e.deep_search, '_candidate_points',
+                               side_effect=fake_candidate_points), \
+                mock.patch.object(e.deep_search, '_recursive',
+                                  return_value=(0.0, 0, 2, 1, 10)):
+            ranked = e.deep_search.rank_candidates(board, [root], BLACK)
+
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]['forced'], 0)
+        # 根候选自身 1 个 + 递归子树全部节点 10 个 = 分母 11；
+        # 分子为递归子树里的 2 胜 1 负。
+        self.assertAlmostEqual(ranked[0]['fatal_ratio'], 1 / 11.0)
 
 
 class IntegrationTest(unittest.TestCase):

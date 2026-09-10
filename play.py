@@ -96,7 +96,8 @@ class GomokuApp:
         self.turn_label = ttk.Label(panel, text='', justify=tk.LEFT, wraplength=210)
         self.turn_label.grid(row=23, column=0, sticky='w', pady=8)
 
-        self.info = tk.Text(self.root, width=24, height=26, state=tk.DISABLED)
+        # 宽度按最长候选行预留，保证“序号 + 坐标 + 分数 + 选中/必胜标记”单行显示。
+        self.info = tk.Text(self.root, width=50, height=26, state=tk.DISABLED)
         self.info.pack(side=tk.LEFT, fill=tk.Y)
 
         # 棋盘画布：填满剩余空间，格子尺寸随窗口动态计算（全屏自动放大）

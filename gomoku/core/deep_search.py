@@ -171,6 +171,13 @@ class DeepSearch:
         return 0
 
     @staticmethod
+    def _fatal_ratio(n_win, n_lose, n_total):
+        """强制链胜败比：分母为全部子节点数（含未判定子节点），零时取 0。"""
+        if n_total <= 0:
+            return 0.0
+        return (n_win - n_lose) / float(n_total)
+
+    @staticmethod
     def _pick_key(forced, ratio, score):
         """决策排序键：根必胜 > 正胜败比 > 候选分 > 根必败。"""
         if forced == 1:
@@ -393,17 +400,20 @@ class DeepSearch:
         模拟落子后同步更新状态表（journal 哈希表回滚），保证候选点/必杀检测
         基于当前分支的真实棋盘，而不是进入深推前的过期状态表。
         ctx_branch 与 branch 同步记录每步上下文，供神经网络分支矩阵使用。
-        cache: {落子序列: (评估分, 必杀链状态)} 前缀复用。
+        cache: {落子序列: (评估分, 必杀链状态, 必胜数, 必败数, 全部节点数)} 前缀复用。
         trace=True 时按树形缩进输出推演内部（调试用）。
-        返回 (分支评估分, forced_state)：forced_state 为该节点决策方(player)视角的
-        必杀链必然性：+1 必胜 / -1 必败 / 0 不确定（旁路识别，不参与打分）。"""
+        返回 (分支评估分, forced_state, n_win, n_lose, n_total)：
+        forced_state 为该节点决策方(player)视角的必杀链必然性；
+        n_win/n_lose 为子树中判定为胜/败的子节点数；
+        n_total 为子树内参与统计的全部节点数（含当前节点与未判定节点），
+        供根节点胜败比分母使用。"""
         key = tuple((r, c) for (r, c, _p, _w) in branch)
         if key in cache:
             return cache[key]
         cands = self._candidate_points(board, player, 5, plies=len(branch))
         if not cands:
-            cache[key] = (0.0, 0, 0, 0)
-            return (0.0, 0, 0, 0)
+            cache[key] = (0.0, 0, 0, 0, 1)
+            return (0.0, 0, 0, 0, 1)
         cand_ws = [x[2] for x in cands]
         # 我方候选分支：绝对路径权重 = path_w × 本步质量（深层连乘衰减 → 自动剪弱枝）
         raw = []
@@ -415,6 +425,7 @@ class DeepSearch:
         cand_states = []                     # 子分支状态（player 视角，必杀链传播）
         cand_wins = []                       # 子子树 main 视角必胜判定节点数
         cand_losses = []
+        cand_totals = []                     # 子分支全部节点数（含未判定）
         for (q, r, c, w) in kept:
             if board[r][c] != EMPTY:
                 continue
@@ -434,6 +445,7 @@ class DeepSearch:
                 branch_state = self._leaf_forced_state(ctx_branch, player, main_player)   # player 视角
                 cw = 1 if branch_state == 1 else 0
                 cl = 0
+                c_total = 1              # 该候选子节点本身
                 if trace:
                     print('  ' * indent + '   -> WIN %g' % score)
             else:
@@ -445,6 +457,7 @@ class DeepSearch:
                     score = self._leaf_score(board, branch, 'stale', player, ctx_branch)
                     branch_state = 0
                     cw = cl = 0
+                    c_total = 1          # 该候选子节点本身（无应手）
                 else:
                     opp_cand_ws = [x[2] for x in opp_pts]
                     # 对方应手分支：绝对路径权重 = path_w × q × oq（连乘衰减）
@@ -457,6 +470,7 @@ class DeepSearch:
                     opp_states = []          # 该候选下 opp 应手层（opp 视角状态）
                     cw = 0
                     cl = 0
+                    c_total = 0
                     for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
@@ -476,18 +490,21 @@ class DeepSearch:
                             opp_states.append(st)
                             cw += 0
                             cl += 1 if st == 1 else 0
+                            c_total += 1      # 对方应手子节点
                             if trace:
                                 print('  ' * indent + '   -> B应%s%d LOSE %g' % ('ABCDEFGHIJKLMNO'[oc], or_ + 1, child))
                         elif temp2 <= 0:
                             child = self._leaf_score(board, branch, 'stale', player, ctx_branch)
                             opp_states.append(0)
+                            c_total += 1      # 对方应手子节点（未判定）
                             if trace:
                                 print('  ' * indent + '   -> 温度尽(t=%g<dt=%g) leaf=%g' % (temp2 + self._dt(w), self._dt(w), child))
                         else:
-                            child, st, cw2, cl2 = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, indent + 1, path_w=path_w * q * oq)
+                            child, st, cw2, cl2, ct2 = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, indent + 1, path_w=path_w * q * oq)
                             opp_states.append(-st)   # 递归返回 player 视角 → 投影到 opp 视角
                             cw += cw2
                             cl += cl2
+                            c_total += ct2        # 递归子节点及其子树
                         self.search.restore(j_b)
                         branch.pop()
                         ctx_branch.pop()
@@ -501,6 +518,7 @@ class DeepSearch:
                         cl += 1
                     elif opp_layer == -1:
                         cw += 1
+                    c_total += 1          # 该候选子节点本身（应手层聚合节点，含未判定）
                     branch_state = -opp_layer
             self.search.restore(j_w)
             branch.pop()
@@ -512,12 +530,14 @@ class DeepSearch:
             cand_states.append(branch_state)
             cand_wins.append(cw)
             cand_losses.append(cl)
+            cand_totals.append(c_total)
         val = self._weighted_average(weighted)
         node_state = self._merge_fatal_states(cand_states)
         n_win = sum(cand_wins) + (1 if node_state == 1 else 0)
         n_lose = sum(cand_losses) + (1 if node_state == -1 else 0)
-        cache[key] = (val, node_state, n_win, n_lose)
-        return val, node_state, n_win, n_lose
+        n_total = sum(cand_totals) + 1          # 当前节点本身
+        cache[key] = (val, node_state, n_win, n_lose, n_total)
+        return val, node_state, n_win, n_lose, n_total
 
     def deep_search(self, board, points, player, trace=False):
         """温度银行深度推演入口：对候选点逐一开始推演，返回分支分最高的 (r, c)。
@@ -570,6 +590,7 @@ class DeepSearch:
                 val = self._leaf_score(board, branch, 'win', player, ctx_branch)
                 root_state = self._leaf_forced_state(ctx_branch, player, main_player)   # player 视角
                 cw, cl = (1, 0) if root_state == 1 else (0, 0)
+                c_total = 1              # 该候选根子节点本身
                 if trace:
                     print('   -> direct WIN %g' % val)
             else:
@@ -581,6 +602,7 @@ class DeepSearch:
                     val = self._leaf_score(board, branch, 'stale', player, ctx_branch)
                     root_state = 0
                     cw = cl = 0
+                    c_total = 1          # 该候选根子节点本身（无应手）
                 else:
                     opp_cand_ws = [x[2] for x in opp_pts]
                     # 对方应手分支：按路径质量权重剪枝 + 加权求和（替代 min）
@@ -593,6 +615,7 @@ class DeepSearch:
                     opp_states = []          # 根层对方应手（opp 视角状态，必杀链传播）
                     cw = 0
                     cl = 0
+                    c_total = 0
                     for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
@@ -611,16 +634,19 @@ class DeepSearch:
                             st = self._leaf_forced_state(ctx_branch, opp, main_player)
                             opp_states.append(st)
                             cl += 1 if st == 1 else 0      # opp 必胜 → main 必败节点
+                            c_total += 1                  # 对方应手子节点
                             if trace:
                                 print('   -> B resp %s%d LOSE %g' % ('ABCDEFGHIJKLMNO'[oc], or_ + 1, child))
                         elif temp2 <= 0:
                             child = self._leaf_score(board, branch, 'stale', player, ctx_branch)
                             opp_states.append(0)
+                            c_total += 1                  # 对方应手子节点（未判定）
                         else:
-                            child, st, cw2, cl2 = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, 1)
+                            child, st, cw2, cl2, ct2 = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, 1)
                             opp_states.append(-st)   # 递归返回 player 视角 → 投影到 opp 视角
                             cw += cw2
                             cl += cl2
+                            c_total += ct2              # 递归子节点及其子树
                         self.search.restore(j_b)
                         branch.pop()
                         ctx_branch.pop()
@@ -632,6 +658,7 @@ class DeepSearch:
                         cl += 1              # opp 层聚合：opp 必胜 → main 必败节点
                     elif opp_layer == -1:
                         cw += 1              # opp 层聚合：opp 必败 → main 必胜节点
+                    c_total += 1              # 该候选根子节点本身（应手层聚合节点，含未判定）
                     root_state = -opp_layer
             self.search.restore(j_w)
             branch.pop()
@@ -639,9 +666,9 @@ class DeepSearch:
             board[r][c] = EMPTY
             # 必胜/必败只取候选根节点的聚合结论；根节点本身不重复计入比例。
             # 只有根节点尚未定论时，才用子节点的胜败统计辅助排序。
+            # 分母为全部子节点数（含未判定），不是仅胜败子节点数。
             if root_state == 0:
-                tot = cw + cl
-                ratio = (cw - cl) / float(tot) if tot else 0.0
+                ratio = self._fatal_ratio(cw, cl, c_total)
             else:
                 ratio = 0.0
             if trace:
