@@ -122,3 +122,5 @@ App 私有目录（运行时注入 Python 的 `GOMOKU_HOME`）保存：
   - 模拟器安装并启动成功，`topResumedActivity=com.example.gomoku/.MainActivity`，未发现 FATAL 错误；
   - 本地构建 APK SHA-256：`4FA37A10C8F0AA3CBA457AC086C955A4EF029315201F8D78CDB88DB48C90CAFF`（正式发布以 GitHub Actions 构建产物为准）。
 - v1.3.0 尚未做人工点击走子、悔棋、认输等交互验证。
+- v1.3.3：GitHub Actions 构建并发布 debug APK（`versionCode=10303`、`versionName=1.3.3`，arm64-v8a + x86_64），Release 同时包含 Windows EXE、macOS zip 和 `SHA256SUMS.txt`。
+- v1.3.3 仍未做人工点击走子、悔棋、认输等交互验证；APK 为 debug 包，EXE 未签名。
