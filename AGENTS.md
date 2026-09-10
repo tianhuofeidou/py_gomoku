@@ -15,7 +15,9 @@
 - 核心引擎和独立界面保持零第三方运行依赖；`tkinter` 视为 Python 标准发行版能力。未经用户确认，不得为正式运行路径新增第三方库。
 - 神经网络相关代码属于本地实验或预留能力。独立界面默认关闭叶子网络和决策网络；不得仅因模型文件或接口存在就宣称当前使用了神经网络。
 - 若任务涉及桌面 `Gomoku.exe`，必须区分源码版本与已打包版本。源码改动不会自动进入 EXE；只有重新打包并核验后才能称 EXE 为最新版本。
-- GitHub 仓库仅包含受跟踪的 Python 引擎和独立版源码。本地插件层、模型、训练数据和实验产物是否入库，以 `.gitignore` 和用户明确指令为准。
+- Android 客户端位于 `android/`，通过 Chaquopy 运行同一套纯算法引擎；当前只发布 debug APK，未配置 release 签名前不得表述为正式签名包。
+- GitHub 仓库包含受跟踪的 Python 引擎、独立版源码、`android/` 客户端和发布脚本；本地插件层、模型、训练数据和实验产物是否入库，以 `.gitignore` 和用户明确指令为准。
+- EXE、APK、macOS zip 只作为 GitHub Release 资产分发，不作为受跟踪源码入库。
 
 ## 模块职责
 
@@ -26,6 +28,9 @@
 - `gomoku/game.py`、`gomoku/session.py`、`gomoku/service.py`：棋局规则、会话流程和引擎服务边界。
 - `gomoku/memory.py`：对局记录、结算、棋谱经验和对称归一化。
 - `play.py`、`play_cli.py`：独立图形界面和命令行入口；不得在入口中复制一套与核心引擎不同的选点逻辑。
+- `android/`：Kotlin + Compose + Chaquopy Android 客户端；`app/src/main/python/gomoku/` 由同步脚本生成，不得手工编辑。
+- `scripts/sync_android_engine.py`：把桌面 `gomoku/` 同步到 Android 内嵌引擎，并提供 `--check` 供 CI 使用。
+- `.github/workflows/`：CI 与发布流程；构建产物不入库。
 - `gomoku/adapter/`：插件或进程调用适配层，应复用核心引擎并保持会话隔离。
 - `gomoku/tests/`：正式回归测试。修复已确认的 Bug 时，必须增加能在旧实现失败、在新实现通过的测试。
 
@@ -41,6 +46,8 @@
 - 不新增与需求无关的兼容层、配置开关、抽象类或隐式全局状态。确有必要时先说明原因。
 - 不凭感觉修改棋型权重、温度参数、剪枝阈值或攻防档位；参数变化必须有目标场景、对照结果和回归验证。
 - 处理脏工作区时保留用户已有修改，不覆盖、不回退、不删除无关文件。
+- Android 内嵌 Python 引擎的唯一事实来源是仓库根目录 `gomoku/`；修改引擎后必须运行同步脚本，并保证 `--check` 通过。
+- 发布产物（EXE/APK/macOS zip）和构建中间目录不得进入源码库；只由发布工作流上传到 GitHub Release。
 
 ## 深推与强制链不变量
 
@@ -96,6 +103,8 @@
 
 - 安装新依赖、下载模型或引入外部代码前必须获得用户确认。
 - 遵守 `.gitignore`。不得使用 `git add -f` 强行提交被忽略文件，除非用户明确要求将该类文件纳入仓库。
+- PyInstaller、Android Gradle/Chaquopy 属于构建期依赖，版本固定在 workflow 中；正式运行路径仍保持零第三方运行依赖。
+- `android/.gradle/`、`android/**/build/`、`local.properties`、`*.apk`、`*.aab` 等本地或构建产物不得入库。
 - `lib/`、`package.json`、Node 依赖、本地会话文件、`gomoku/nn/`、模型权重、训练样本、KataGo 数据、GA 检查点和本地存档默认不进入 GitHub。
 - 不修改或清理训练数据、模型、存档和实验产物，除非任务明确要求且已核对准确目标。
 - 临时文件放入系统临时目录或明确的临时子目录，不把调试输出留在源码目录。
@@ -118,11 +127,25 @@ node --test gomoku/tests/test_plugin.cjs
 ```
 
 - 纯文档修改至少运行 `git diff --check`，并核对文档与当前实现一致。
+- 修改 Android 内嵌引擎后，必须运行 `python scripts/sync_android_engine.py --check`。
+- Android 产物发布前至少核对 `aapt2 dump badging` 的 versionCode/versionName/ABI 和 `apksigner verify`；有条件时在模拟器或真机安装启动。
+- Windows EXE 发布前必须核对包内 assets/GA 数据、确认未包含 `torch`/`numpy`/`gomoku.nn`，并做启动冒烟。
 - 修改棋盘/状态表更新时，必须验证模拟深推后状态完全恢复。
 - 修改选点逻辑时，至少覆盖黑白双方、直接战术、多候选排序、未判定分支和必败兜底。
 - 修改 GUI 时，除自动化测试外应检查启动、窗口缩放、后台思考和候选显示；若未实际启动界面，要明确说明未做人工视觉验证。
 - 测试失败时不得为了通过而降低断言、删除测试或扩大容错；先判断是实现错误、测试过期还是用户规则变化。
 - 最终汇报区分“自动化测试通过”“人工界面检查完成”“EXE 已重新打包验证”，不能互相替代。
+
+## 构建、发布与 CI
+
+- `.github/workflows/ci.yml`：运行 Python 完整回归和 Android 引擎同步检查。
+- `.github/workflows/build-windows.yml`、`build-android.yml`、`build-macos.yml`：分别构建 Windows EXE、Android debug APK、macOS zip；只上传 workflow artifact，也可被 release 工作流复用。
+- `.github/workflows/release.yml`：由 `v*` 标签或手动触发；先解析 tag 和 versionCode，再验证源码、并行构建三平台；全部成功后才创建 draft Release、上传全部资产和 `SHA256SUMS.txt`，最后 publish。
+- 版本号以 tag 为准；Android versionCode 规则为 `major*10000 + minor*100 + patch`。
+- Windows EXE 使用 Python 3.14 + PyInstaller 6.22.2，并排除 `torch`/`numpy`/`gomoku.nn`；macOS 保持 Python 3.12 + PyInstaller 6.22.2。
+- Android CI 使用 JDK 17、Android SDK 36、build-tools 36.0.0、Python 3.14；`CHAQUOPY_BUILD_PYTHON` 指向 CI 安装的 Python。
+- 发布资产命名：`Gomoku-QifengXiaojing-<tag>-win64.exe`、`Gomoku-QifengXiaojing-<tag>-debug.apk`、`QifengXiaojing-<tag>-macos.zip`。
+- 标签推送会触发统一 release 工作流；Release 必须等 Windows、macOS、Android 全部构建成功后才可正式发布，失败时只允许保留 draft。
 
 ## Git 与版本发布
 
@@ -145,3 +168,4 @@ node --test gomoku/tests/test_plugin.cjs
 - 不使用会清空工作区或用户修改的命令，例如 `git reset --hard`、无目标校验的递归删除或覆盖式 checkout。
 - 未被 Git 跟踪的文件删除后通常无法通过 Git 恢复；执行前必须明确告知这一点。
 - 不在输出、日志、提交或文档中暴露访问令牌、凭据、私有仓库内容或本地个人数据。
+- Android release keystore、Windows 代码签名证书及其密码只放 GitHub Secrets 或本机安全位置，不得进入仓库、构建日志或 Release 资产。

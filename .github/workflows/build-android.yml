@@ -1,0 +1,99 @@
+name: Build Android debug APK
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      version_code:
+        required: true
+        type: string
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'android/**'
+      - 'gomoku/**'
+      - 'scripts/sync_android_engine.py'
+      - '.github/workflows/build-android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'gomoku/**'
+      - 'scripts/sync_android_engine.py'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    name: Android debug APK
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.14'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0 platform-tools'
+          accept-android-sdk-licenses: 'true'
+
+      - name: Check embedded engine sync
+        shell: pwsh
+        run: python scripts\sync_android_engine.py --check
+
+      - name: Build debug APK
+        shell: pwsh
+        working-directory: android
+        env:
+          CHAQUOPY_BUILD_PYTHON: ${{ steps.python.outputs.python-path }}
+          APP_VERSION: ${{ inputs.version }}
+          APP_VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          $gradleArgs = @(':app:assembleDebug', '--no-configuration-cache', '--no-daemon')
+          if ($env:APP_VERSION) { $gradleArgs += "-PversionName=$env:APP_VERSION" }
+          if ($env:APP_VERSION_CODE) { $gradleArgs += "-PversionCode=$env:APP_VERSION_CODE" }
+          & .\gradlew.bat @gradleArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify APK metadata
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $apk = "android\app\build\outputs\apk\debug\app-debug.apk"
+          if (-not (Test-Path $apk)) { throw "APK not found: $apk" }
+          $aapt2 = Join-Path $env:ANDROID_HOME "build-tools\36.0.0\aapt2.exe"
+          & $aapt2 dump badging $apk | Select-String -Pattern "package:|native-code"
+          $hash = (Get-FileHash -Algorithm SHA256 $apk).Hash
+          Write-Output "SHA256=$hash"
+          $outDir = "android\build\release-assets"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $outName = if ($env:RELEASE_TAG) { "Gomoku-QifengXiaojing-$env:RELEASE_TAG-debug.apk" } else { "app-debug.apk" }
+          Copy-Item $apk (Join-Path $outDir $outName) -Force
+          $hash2 = (Get-FileHash -Algorithm SHA256 (Join-Path $outDir $outName)).Hash
+          Write-Output "RELEASE_ASSET=$outName SHA256=$hash2"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: android/build/release-assets/*.apk
+          if-no-files-found: error

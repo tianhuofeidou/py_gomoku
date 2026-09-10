@@ -1,0 +1,83 @@
+name: Build Windows EXE
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'gomoku/**'
+      - 'play.py'
+      - 'assets/**'
+      - 'scripts/**'
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    paths:
+      - 'gomoku/**'
+      - 'play.py'
+      - 'assets/**'
+      - 'scripts/**'
+      - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-exe:
+    name: Windows EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.22.2
+
+      - name: Run Python regression
+        run: python -m unittest discover -s gomoku/tests -v
+
+      - name: Build EXE
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $versionLabel = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { 'dev' }
+          $assets = (Resolve-Path 'assets').Path
+          $icon = (Resolve-Path 'assets\icons\gomoku-ds.ico').Path
+          $ga = (Resolve-Path 'gomoku\data\ga_best_params.json').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name "Gomoku-QifengXiaojing-$versionLabel-win64" `
+            --icon $icon `
+            --add-data "$assets;assets" `
+            --add-data "$ga;gomoku/data" `
+            --exclude-module torch --exclude-module numpy --exclude-module gomoku.nn `
+            --specpath build --workpath build\work --distpath dist `
+            play.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Write SHA256SUMS
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem dist\*.exe | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash
+            "$hash  $($_.Name)"
+          }
+          $lines | Set-Content -Encoding utf8 dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

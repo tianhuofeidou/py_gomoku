@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to build and publish, e.g. v1.3.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+      version: ${{ steps.vars.outputs.version }}
+      version_code: ${{ steps.vars.outputs.version_code }}
+    steps:
+      - name: Resolve release tag
+        id: vars
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$CODE" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify sources
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Python regression
+        run: python -m unittest discover -s gomoku/tests -v
+      - name: Android embedded engine sync
+        run: python scripts/sync_android_engine.py --check
+
+  build-windows:
+    name: Build Windows EXE
+    needs:
+      - prepare
+      - verify
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.tag }}
+
+  build-macos:
+    name: Build macOS app
+    needs:
+      - prepare
+      - verify
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.tag }}
+
+  build-android:
+    name: Build Android debug APK
+    needs:
+      - prepare
+      - verify
+    uses: ./.github/workflows/build-android.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.tag }}
+      version: ${{ needs.prepare.outputs.version }}
+      version_code: ${{ needs.prepare.outputs.version_code }}
+
+  publish:
+    name: Publish release
+    needs:
+      - prepare
+      - build-windows
+      - build-macos
+      - build-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: find release-assets -maxdepth 2 -type f -print
+
+      - name: Write SHA256SUMS
+        shell: bash
+        run: |
+          cd release-assets
+          find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --json isDraft -q .isDraft >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" != "true" ]; then
+              echo "release $TAG already published; refusing to modify it" >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --title "$TAG" --notes "棋逢小鲸 $TAG"
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" release-assets/* --clobber
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false

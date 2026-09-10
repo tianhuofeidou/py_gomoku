@@ -12,6 +12,15 @@ dist/
 *.spec
 *.exe
 *.apk
+*.aab
+
+# Android 本地配置与构建产物
+local.properties
+.gradle/
+.kotlin/
+android/.externalNativeBuild/
+android/.cxx/
+android/captures/
 
 # IDE
 .idea/

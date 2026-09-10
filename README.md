@@ -1,4 +1,4 @@
-# 棋逢小鲸 v1.2.1
+# 棋逢小鲸 v1.3.0
 
 棋逢小鲸（Gomoku）是一个本地运行的五子棋程序，使用 15×15 棋盘，黑方先行，不设禁手。项目提供图形界面、命令行对战和 AI 自弈功能。正式版本采用纯 Python 算法，不需要联网，也不依赖大模型或神经网络。
 
@@ -238,6 +238,8 @@ gomoku/
 ├── session.py      单局会话
 ├── service.py      AI 落子服务
 └── memory.py       战绩与棋谱记忆
+android/            Android 客户端（Kotlin + Compose + Chaquopy）
+scripts/            引擎同步与发布辅助脚本
 play.py             图形界面入口
 play_cli.py         命令行入口
 ```
@@ -256,6 +258,21 @@ python -m unittest gomoku.tests.test_rank_candidates -v
 # 本地存在插件层和 Node.js 时运行
 node --test gomoku/tests/test_plugin.cjs
 ```
+
+### Android 客户端
+
+`android/` 是 Kotlin + Compose 客户端，通过 Chaquopy 17 在 App 内运行同一套纯算法引擎；当前只产出 debug APK，release 需要配置签名。构建前先在仓库根目录同步内嵌引擎：
+
+```bash
+python scripts/sync_android_engine.py
+python scripts/sync_android_engine.py --check
+```
+
+本地构建需要 JDK 17、Android SDK 和 Python 3.14，详细命令见 `android/README.md`。
+
+### 发布产物
+
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：在 Windows EXE、Android debug APK、macOS zip 三平台全部构建成功后，才会创建并发布 GitHub Release，并附加 `SHA256SUMS.txt`。构建产物不进入源码仓库。
 
 ### 可选评估工具
 
