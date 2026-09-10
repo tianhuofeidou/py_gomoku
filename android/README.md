@@ -71,7 +71,7 @@ gradlew.bat :app:assembleDebug --no-configuration-cache
 ```
 
 CI 或特殊版本可用 `-PversionName` / `-PversionCode` 覆盖，例如：
-`gradlew.bat :app:assembleDebug -PversionName=1.3.0 -PversionCode=10300 --no-configuration-cache`。
+`gradlew.bat :app:assembleDebug -PversionName=1.3.1 -PversionCode=10301 --no-configuration-cache`。
 
 产物：
 

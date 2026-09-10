@@ -25,7 +25,9 @@ TOP_FILES = (
     'session.py',
 )
 
-# 桌面引擎中需要复制到 Android 的 core 文件
+# 桌面引擎中需要复制到 Android 的 core 文件。
+# 注意：gomoku/core/evaluate.py 被 .gitignore 排除，GitHub 干净检出不存在；
+# 移动端也不启用神经网络，因此不纳入同步清单。
 CORE_FILES = (
     '__init__.py',
     'utils.py',
@@ -33,7 +35,6 @@ CORE_FILES = (
     'search.py',
     'deep_search.py',
     'engine.py',
-    'evaluate.py',
     'train.py',
 )
 
