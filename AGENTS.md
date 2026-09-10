@@ -24,6 +24,9 @@
 - 正式发布产物以 GitHub Actions 构建并发布到 GitHub Release 的资产为准；日常使用、分发和验证优先直接从 Release 下载，不在本地重复构建。
 - 本地构建只用于复现问题、诊断发布流程或用户明确要求，不得把本地产物当作正式发布版本。
 - 从 Release 下载资产后必须用同版本的 `SHA256SUMS.txt` 校验；校验失败不得使用或分发。
+- Windows 桌面“棋逢小鲸”快捷方式必须指向稳定的 `Gomoku-QifengXiaojing-latest.exe` 入口，不得写死某个版本号。
+- 每次从 GitHub Release 下载新版本 EXE 并校验 SHA256 后，必须同步更新该稳定入口（硬链接或副本），确保桌面快捷方式始终启动最新正式版。
+- 桌面项目快捷方式应直接指向实际仓库根目录，不经过用户 profile 下的 junction。
 
 ## 模块职责
 
