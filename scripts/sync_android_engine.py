@@ -79,6 +79,11 @@ def dest_root(root):
     return root / 'android' / 'app' / 'src' / 'main' / 'python' / 'gomoku'
 
 
+def _normalize_newlines(data):
+    """Git 在 Windows 检出时可能把 LF 转换为 CRLF；比较时统一按 LF 归一化。"""
+    return data.replace(b'\r\n', b'\n')
+
+
 def check(root):
     """返回 (errors, warnings)。errors 非空表示同步漂移。"""
     src = root / 'gomoku'
@@ -96,7 +101,7 @@ def check(root):
         if not target.is_file():
             errors.append(f'缺少文件: {rel}')
             continue
-        if target.read_bytes() != want:
+        if _normalize_newlines(target.read_bytes()) != _normalize_newlines(want):
             errors.append(f'内容不同步: {rel}')
 
     known = {str(p).replace('\\', '/') for p in expected}
@@ -114,7 +119,7 @@ def sync(root):
     for rel, data in expected.items():
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        if target.is_file() and target.read_bytes() == data:
+        if target.is_file() and _normalize_newlines(target.read_bytes()) == _normalize_newlines(data):
             continue
         target.write_bytes(data)
     return check(root)
