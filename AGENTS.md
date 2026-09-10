@@ -18,6 +18,9 @@
 - Android 客户端位于 `android/`，通过 Chaquopy 运行同一套纯算法引擎；当前只发布 debug APK，未配置 release 签名前不得表述为正式签名包。
 - GitHub 仓库包含受跟踪的 Python 引擎、独立版源码、`android/` 客户端和发布脚本；本地插件层、模型、训练数据和实验产物是否入库，以 `.gitignore` 和用户明确指令为准。
 - EXE、APK、macOS zip 只作为 GitHub Release 资产分发，不作为受跟踪源码入库。
+- 正式发布产物以 GitHub Actions 构建并发布到 GitHub Release 的资产为准；日常使用、分发和验证优先直接从 Release 下载，不在本地重复构建。
+- 本地构建只用于复现问题、诊断发布流程或用户明确要求，不得把本地产物当作正式发布版本。
+- 从 Release 下载资产后必须用同版本的 `SHA256SUMS.txt` 校验；校验失败不得使用或分发。
 
 ## 模块职责
 
