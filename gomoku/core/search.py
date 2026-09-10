@@ -531,41 +531,43 @@ class Search:
         board[r][c] = player
         try:
             recs = self.pattern.analyze_point(board, r, c, player)
+            for rec in recs:
+                parent = rec['parent']
+                if parent not in ('LIVE4', 'SLEEP4', 'LIVE3'):
+                    continue
+                dr, dc = rec['dir']
+                # ① 端点提取：每条线取两端空位，l_edge 用负方向(减)、r_edge 用正方向(加)，
+                #    距离 d 与方向 (dr,dc) 结合得端空位坐标。
+                #    第一步过滤【有没有子】：d=1 = 端紧贴成形点、中间无 player 子（无子方向，
+                #    如活四的外侧空端）→ 不提取；d>1 = 端跨过 player 子链（有子方向）→ 提取。
+                #    第二步过滤【端类型】：与 pattern._classify 的 OPEN_END 一致 (1,3,4,5)
+                #    1=活(__) 3=半活(_|) 4=断裂端(第二个_x) 5=延伸端(__x)
+                for (d, t), sign in ((rec['l_edge'], -1), (rec['r_edge'], +1)):
+                    if d <= 1:
+                        continue                # 无子方向：中间没有 player 子，端无防守意义
+                    if t not in (1, 3, 4, 5):
+                        continue
+                    pr, pc = r + sign * d * dr, c + sign * d * dc   # 该端空位（紧贴段外）
+                    if 0 <= pr < SIZE and 0 <= pc < SIZE and board[pr][pc] == EMPTY:
+                        pts[(pr, pc)] = end_w
+                # ② gap 提取：缝 = 两个 player 子之间的空位（xx_xx 的中间格）。
+                #    gap_location = 缝到基子的距离（0 = 无缝）。左右两侧都试，
+                #    验证缝两侧紧邻格都是 player 子才确认是真缝（兼容双缝拆分的记录）。
+                #    注意：模拟落子在扫描期间必须保留在棋盘上，否则紧贴威胁点的缝
+                #    会把威胁点自身误判成空位而漏掉（F9/G9 类型防守点）。
+                gl = rec.get('gap_location') or 0
+                if gl:
+                    for sign in (-1, 1):
+                        pr, pc = r + sign * gl * dr, c + sign * gl * dc
+                        if not (0 <= pr < SIZE and 0 <= pc < SIZE) or board[pr][pc] != EMPTY:
+                            continue
+                        lr, lc = r + sign * (gl - 1) * dr, c + sign * (gl - 1) * dc
+                        rr2, rc2 = r + sign * (gl + 1) * dr, c + sign * (gl + 1) * dc
+                        if (0 <= lr < SIZE and 0 <= lc < SIZE and board[lr][lc] == player
+                                and 0 <= rr2 < SIZE and 0 <= rc2 < SIZE and board[rr2][rc2] == player):
+                            pts[(pr, pc)] = end_w
         finally:
             board[r][c] = EMPTY
-        for rec in recs:
-            parent = rec['parent']
-            if parent not in ('LIVE4', 'SLEEP4', 'LIVE3'):
-                continue
-            dr, dc = rec['dir']
-            # ① 端点提取：每条线取两端空位，l_edge 用负方向(减)、r_edge 用正方向(加)，
-            #    距离 d 与方向 (dr,dc) 结合得端空位坐标。
-            #    第一步过滤【有没有子】：d=1 = 端紧贴成形点、中间无 player 子（无子方向，
-            #    如活四的外侧空端）→ 不提取；d>1 = 端跨过 player 子链（有子方向）→ 提取。
-            #    第二步过滤【端类型】：与 pattern._classify 的 OPEN_END 一致 (1,3,4,5)
-            #    1=活(__) 3=半活(_|) 4=断裂端(第二个_x) 5=延伸端(__x)
-            for (d, t), sign in ((rec['l_edge'], -1), (rec['r_edge'], +1)):
-                if d <= 1:
-                    continue                # 无子方向：中间没有 player 子，端无防守意义
-                if t not in (1, 3, 4, 5):
-                    continue
-                pr, pc = r + sign * d * dr, c + sign * d * dc   # 该端空位（紧贴段外）
-                if 0 <= pr < SIZE and 0 <= pc < SIZE and board[pr][pc] == EMPTY:
-                    pts[(pr, pc)] = end_w
-            # ② gap 提取：缝 = 两个 player 子之间的空位（xx_xx 的中间格）。
-            #    gap_location = 缝到基子的距离（0 = 无缝）。左右两侧都试，
-            #    验证缝两侧紧邻格都是 player 子才确认是真缝（兼容双缝拆分的记录）。
-            gl = rec.get('gap_location') or 0
-            if gl:
-                for sign in (-1, 1):
-                    pr, pc = r + sign * gl * dr, c + sign * gl * dc
-                    if not (0 <= pr < SIZE and 0 <= pc < SIZE) or board[pr][pc] != EMPTY:
-                        continue
-                    lr, lc = r + sign * (gl - 1) * dr, c + sign * (gl - 1) * dc
-                    rr2, rc2 = r + sign * (gl + 1) * dr, c + sign * (gl + 1) * dc
-                    if (0 <= lr < SIZE and 0 <= lc < SIZE and board[lr][lc] == player
-                            and 0 <= rr2 < SIZE and 0 <= rc2 < SIZE and board[rr2][rc2] == player):
-                        pts[(pr, pc)] = end_w
         return pts
 
     # ---------- 子类排序键与评分 ----------

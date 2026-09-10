@@ -70,6 +70,24 @@ class RegressionTest(unittest.TestCase):
             self.assertEqual(e.deep_search._candidate_points(board, WHITE),
                              [(r, c, w) for (r, c), w in list(points.items())[:5]])
 
+    def test_defense_candidates_include_threat_adjacent_gaps(self):
+        """防守反推必须包含紧贴威胁点的缝位，不能被漏掉（F9/G9 回归）。"""
+        moves = [(7, 7, BLACK), (6, 6, WHITE), (5, 5, BLACK), (5, 7, WHITE),
+                 (7, 5, BLACK), (4, 5, WHITE), (7, 6, BLACK), (7, 4, WHITE),
+                 (6, 5, BLACK), (5, 4, WHITE), (6, 3, BLACK), (4, 4, WHITE),
+                 (6, 4, BLACK), (4, 6, WHITE), (4, 7, BLACK), (3, 5, WHITE),
+                 (6, 8, BLACK)]
+        board, e = self.board_engine(moves)
+        reason, points = e.search.tactical_candidates(board, WHITE)
+        self.assertEqual(reason, 'opp-vcf')
+        # F10 是威胁点中心；F9/G9 是紧贴威胁点的两个缝位防守点。
+        self.assertIn((9, 5), points)
+        self.assertIn((8, 5), points)
+        self.assertIn((8, 6), points)
+        self.assertEqual(points[(9, 5)], 100.0)
+        self.assertEqual(points[(8, 5)], 80.0)
+        self.assertEqual(points[(8, 6)], 80.0)
+
     def test_local_update_journal_restores_state(self):
         rng = random.Random(7)
         board, e = self.board_engine([])
