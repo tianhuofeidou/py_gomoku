@@ -26,9 +26,9 @@ class GomokuViewModel(application: Application) : AndroidViewModel(application) 
     private var timerJob: Job? = null
     // 与桌面 play.py 的 TEMP_LEVELS 保持一致；Android 端直接内置，避免每次启动多一次 Python 解析。
     private val gearLevels = listOf(
-        GearLevel("轻快", 80, "约 0.2s/手"),
-        GearLevel("标准", 160, "约 2s/手（复杂局面可达 12s）"),
-        GearLevel("认真", 240, "约 10s/手（复杂局面可达 38s）"),
+        GearLevel("轻快", 80, "约 0.3s/手"),
+        GearLevel("标准", 160, "约 3s/手（复杂局面可达 17s）"),
+        GearLevel("认真", 240, "约 15s/手（复杂局面可达 97s）"),
     )
 
     private val prefs = application.getSharedPreferences("gomoku", Context.MODE_PRIVATE)
