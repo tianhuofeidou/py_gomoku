@@ -4,10 +4,10 @@ plugins {
   alias(libs.plugins.chaquopy)
 }
 
-// CI 可用 -PversionName / -PversionCode 覆盖；本地默认 v1.4.1。
+// CI 可用 -PversionName / -PversionCode 覆盖；本地默认 v1.4.2。
 // versionCode 规则：major * 10000 + minor * 100 + patch。
-val appVersionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 10401
-val appVersionName = providers.gradleProperty("versionName").orNull ?: "1.4.1"
+val appVersionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 10402
+val appVersionName = providers.gradleProperty("versionName").orNull ?: "1.4.2"
 
 // CI 必须通过环境变量指定 Python 3.14；本地默认 D 盘路径。
 val chaquopyBuildPython = System.getenv("CHAQUOPY_BUILD_PYTHON")

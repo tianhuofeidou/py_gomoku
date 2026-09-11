@@ -404,27 +404,81 @@ class Search:
         self.zero_active = {BLACK: False, WHITE: False}
         self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
 
+    def _direction_level(self, board, r, c, player, dr, dc):
+        """单方向档位（0 五连 … 5 无）：等价于「analyze_direction 的记录取
+        DIR_LEVEL 最小值」，但不构造棋型记录、不算子类名与 gap_sides。
+
+        改这里之前必须读完下面两条，否则会静默改变状态表编号（进而改变候选分、
+        攻防档位与叶子评估）：
+
+        1. 落子点在该方向【两侧】3 格内都没有己方子 → 该方向必为档位 5，
+           直接返回、不做扫描。
+           依据：_scan_two 从基子向两侧扫描，遇「连续 3 空 / 对方子 / 边界」即停，
+           stones 初值为 1（落子点自身）。某侧 3 格内无己方子时该侧必在 i<=3 内
+           结束、stones 保持 1，而 _classify 对 stones==1 只会返回 SINGLE 或
+           DEAD，两者 DIR_LEVEL 都是 5；同时该侧端类型不可能是 5，端 5 缝合分支
+           也不会触发。
+           - 必须查两侧：_scan_two 是双向扫描（只查单侧会在随机局面上错约 5%）。
+           - 必须查到第 3 格：双空前瞻会读距离 3，那里有己方子会合成 LIVE2（档位 4）。
+
+        2. 完整路径见 _direction_level_scan，与 analyze_direction 对档位的影响
+           逐条对齐（overall 早返回 / normalize / classify / 端 5 缝合）。
+           端 5 缝合【不能省】：它把 SINGLE(5) 换成 LIVE2(4)，而档位 4 在
+           _classify_levels 里要计入 B 的数量。
+        """
+        for sgn in (1, -1):
+            rr, cc = r + sgn * dr, c + sgn * dc
+            for _ in range(3):
+                if in_board(rr, cc) and board[rr][cc] == player:
+                    return self._direction_level_scan(board, r, c, player, dr, dc)
+                rr += sgn * dr
+                cc += sgn * dc
+        return 5
+
+    def _direction_level_scan(self, board, r, c, player, dr, dc):
+        """_direction_level 的完整路径：复刻 analyze_direction 对档位的影响，
+        只是不产出记录、子类名与 gap_sides。"""
+        res = self.pattern._scan_two(board, r, c, player, dr, dc)
+        overall = self.pattern._overall_judge(res)
+        if overall is not None:
+            return DIR_LEVEL[overall['overall']]
+        items = self.pattern._normalize(res)
+        best = 5
+        for item in items:
+            lv = DIR_LEVEL[self.pattern._classify(item)]
+            if lv < best:
+                best = lv
+        if len(items) == 1 and self.pattern._classify(items[0]) == 'SINGLE':
+            lt5 = items[0]['l_edge'][1]
+            rt5 = items[0]['r_edge'][1]
+            if lt5 == 5 or rt5 == 5:
+                best = 5        # 与 analyze_direction 一致：此处丢弃 SINGLE 记录
+                synth = []
+                if lt5 == 5:
+                    synth += self.pattern._synth_double_gap(board, r, c, player, dr, dc, 'l')
+                if rt5 == 5:
+                    synth += self.pattern._synth_double_gap(board, r, c, player, dr, dc, 'r')
+                for it in synth:    # 合成可能为空 → 档位保持 5
+                    lv = DIR_LEVEL[it['parent']]
+                    if lv < best:
+                        best = lv
+        return best
+
     def _eval(self, board, r, c, player):
         """模拟 player 在 (r,c) 落子 → 18 子类编号 0-17。
         流程：
-          1. 临时落子 → analyze_point 得 4 方向棋型记录
-          2. 每方向取最高档位（DIR_LEVEL：0五连...5无）
-          3. _classify_levels 按 4 方向档位组合归类（必杀/威胁/潜力/无用）
-        评估后恢复棋盘（finally 清子）。"""
+          1. 临时落子 → 逐方向取档位（_direction_level，不再构造棋型记录）
+          2. _classify_levels 按 4 方向档位组合归类（必杀/威胁/潜力/无用）
+        评估后恢复棋盘（finally 清子）。
+
+        这是全引擎最热的函数（一次决策约 6 万次调用）。只取档位、不构造记录、
+        不算子类名/gap_sides：_subclass 内部用 list.index() 线性查找，而档位
+        根本不读这些字段。等价性由 gomoku/tests/test_pattern_level_fast.py 锁定。"""
         board[r][c] = player
         try:
-            recs = self.pattern.analyze_point(board, r, c, player)
-            levels = []
-            for (dr, dc) in DIRECTIONS:
-                dir_level = 5
-                for rec in recs:
-                    if rec['dir'] != (dr, dc):
-                        continue
-                    lv = DIR_LEVEL.get(rec['parent'], 5)
-                    if lv < dir_level:
-                        dir_level = lv
-                levels.append(dir_level)
-            return self._classify_levels(levels)
+            direction_level = self._direction_level
+            return self._classify_levels(
+                [direction_level(board, r, c, player, dr, dc) for (dr, dc) in DIRECTIONS])
         finally:
             board[r][c] = EMPTY
 
