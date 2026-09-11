@@ -199,11 +199,10 @@ class DeepSearch:
 
     @staticmethod
     def _merge_fatal_states(child_states):
-        """旧硬状态聚合：任一子硬必胜 → 父硬必胜；全部子硬必败 → 父硬必败。
+        """旧硬状态聚合（仅用于兼容字段 forced/fatal_ratio，不参与决策排序）。
 
-        注意：这里“任一硬必胜”是已知错误逻辑（应为 all），但决策排序暂时
-        仍在使用它；新的 5 态判定已单独放在 _merge_child_states，等决策逻辑
-        改造时再统一切换。"""
+        任一子硬必胜 → 父硬必胜；全部子硬必败 → 父硬必败。
+        注意：这是旧逻辑，排序使用 _merge_child_states。"""
         if not child_states:
             return 0
         if any(s == 1 for s in child_states):
@@ -212,14 +211,15 @@ class DeepSearch:
             return -1
         return 0
 
-    # ---------- 5 态离散判定（新逻辑，暂不接入决策排序） ----------
+    # ---------- 5 态离散判定 ----------
     # 编码：+1 必胜 / +2 存在必胜 / 0 无 / -2 存在必败 / -1 必败。
-    # 先走原硬规则，再走新增的败势/胜势传播：
-    #   原硬规则：所有子节点硬必胜 → 硬必胜
-    #   原硬规则：所有子节点硬必败 → 硬必败
-    #   新增传播：其余情况下出现败势证据（硬必败/存在必败）→ 存在必败
-    #   新增传播：没有败势但有胜势证据 → 存在必胜
-    #   否则                           → 无
+    # 聚合规则：
+    #   全硬必胜 → 硬必胜
+    #   全硬必败 → 硬必败
+    #   其余有硬必败 → 存在必败（硬败势优先）
+    #   否则有硬必胜 → 存在必胜
+    #   否则 → 无
+    # ±2 是当前决策层的局部软证据，父层聚合时按 0 处理。
     STATE_WIN = 1
     STATE_EXISTS_WIN = 2
     STATE_NONE = 0
@@ -238,24 +238,23 @@ class DeepSearch:
     def _merge_child_states(cls, child_states):
         """5 态聚合。child_states 已投影为当前决策方视角。
 
-        先走原硬规则：全硬必胜 → 硬必胜、全硬必败 → 硬必败；
-        其余情况再走败势/胜势传播，且软败只传播为“存在必败”，
-        不升级成硬必败，避免污染祖先。
+        只有硬状态 ±1 参与向上传播：
+        - 全硬必胜 → 硬必胜；
+        - 全硬必败 → 硬必败；
+        - 否则有硬必败 → 存在必败（硬败势优先）；
+        - 否则有硬必胜 → 存在必胜；
+        - 否则 → 无。
+        ±2 是当前层的局部软证据，父层按 0 处理，不再向上传播。
         """
         if not child_states:
             return cls.STATE_NONE
-        # 原硬规则：所有子节点硬必胜
         if all(s == cls.STATE_WIN for s in child_states):
             return cls.STATE_WIN
-        # 原硬规则：所有子节点硬必败（无需额外检测，本来就是这条）
         if all(s == cls.STATE_LOSE for s in child_states):
             return cls.STATE_LOSE
-        # 新增传播：只要出现败势证据，就传播为存在必败
-        losing = (cls.STATE_LOSE, cls.STATE_EXISTS_LOSE)
-        if any(s in losing for s in child_states):
+        if any(s == cls.STATE_LOSE for s in child_states):
             return cls.STATE_EXISTS_LOSE
-        # 没有败势证据时，胜势传播为存在必胜
-        if any(s in (cls.STATE_WIN, cls.STATE_EXISTS_WIN) for s in child_states):
+        if any(s == cls.STATE_WIN for s in child_states):
             return cls.STATE_EXISTS_WIN
         return cls.STATE_NONE
 
@@ -550,10 +549,9 @@ class DeepSearch:
         cache: {落子序列: (评估分, 旧硬状态, 必胜数, 必败数, 全部节点数, 新5态)} 前缀复用。
         trace=True 时按树形缩进输出推演内部（调试用）。
         返回 (分支评估分, forced_state, n_win, n_lose, n_total, new_state)：
-        forced_state 为旧版必杀链硬状态（决策排序暂用，保持不变）；
+        forced_state 为旧版必杀链硬状态，仅作兼容字段；
         n_win/n_lose/n_total 供旧胜败比分母使用；
-        new_state 为新的 5 态离散判定（+1/+2/0/-2/-1），本次只随结果返回，
-        暂不参与 _pick_key。"""
+        new_state 为 5 态离散判定（+1/+2/0/-2/-1），供根节点状态与排序使用。"""
         key = tuple((r, c) for (r, c, _p, _w) in branch)
         if key in cache:
             return cache[key]
@@ -569,8 +567,8 @@ class DeepSearch:
             raw.append((path_w * q, r, c, w))
         kept = self._prune_branches(raw)
         weighted = []
-        cand_states = []                     # 旧硬状态（player 视角，决策排序暂用）
-        new_cand_states = []                 # 新 5 态（player 视角，暂不参与排序）
+        cand_states = []                     # 旧硬状态（player 视角，仅作兼容字段）
+        new_cand_states = []                 # 5 态（player 视角，参与状态排序）
         cand_wins = []                       # 子子树 main 视角必胜判定节点数
         cand_losses = []
         cand_totals = []                     # 子分支全部节点数（含未判定）
