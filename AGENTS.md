@@ -26,6 +26,7 @@
 - 从 Release 下载资产后必须用同版本的 `SHA256SUMS.txt` 校验；校验失败不得使用或分发。
 - Windows 桌面“棋逢小鲸”快捷方式必须指向稳定的 `Gomoku-QifengXiaojing-latest.exe` 入口，不得写死某个版本号。
 - 每次从 GitHub Release 下载新版本 EXE 并校验 SHA256 后，必须同步更新该稳定入口（硬链接或副本），确保桌面快捷方式始终启动最新正式版。
+- 每次正式 Release 发布成功后，必须从该 Release 下载最新 EXE，使用同版本 `SHA256SUMS.txt` 校验 SHA256，并把 `Gomoku-QifengXiaojing-latest.exe` 稳定入口更新到该版本；下载或校验失败时不得更新入口，必须保留旧版本并显式报告。
 - 桌面项目快捷方式应直接指向实际仓库根目录，不经过用户 profile 下的 junction。
 
 ## 模块职责
