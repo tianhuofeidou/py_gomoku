@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""叶子评估 v2 单元测试：
-18 棋型结果分（_stale_result_score）、路径质量（_step_quality）、
+"""叶子评估 v3 单元测试：
+当前局面全盘和、必杀优先级、平滑累进税、路径质量（_step_quality）、
 加权平均（_weighted_average）、剪枝（_prune_branches）、胜负叶恒值。"""
+import math
 import unittest
 from unittest import mock
 
@@ -50,51 +51,140 @@ class StepQualityTest(unittest.TestCase):
         self.assertEqual(kept[0][0], 0.999)
 
 
-class StaleResultScoreTest(unittest.TestCase):
+class CurrentLeafScoreTest(unittest.TestCase):
+    """第六章目标口径：读当前棋盘两张状态表，不读历史 ctx。"""
 
     @staticmethod
-    def ctx(camp, subs, gear=3):
-        return {'camp': camp, 'cand_sub_ids': list(subs), 'gear': gear,
-                'move_w': 60.0, 'cand_ws': [60.0] * len(subs), 'kill': 0}
+    def _score(e, b, player=WHITE, ctx_branch=None):
+        return e.deep_search._leaf_score(
+            b, [(7, 7, player, 60.0)], 'stale', player, ctx_branch or [])
 
-    def test_my_kill_five_highest(self):
-        e = Engine()
-        score = e.deep_search._stale_result_score([self.ctx(1, [0])], WHITE)
-        self.assertEqual(score, 900.0)
+    def test_root_five_wins_920(self):
+        e, b = engine_with([])
+        e.search.sw[7][7] = 0
+        self.assertEqual(self._score(e, b), 920.0)
 
-    def test_my_kill_live4_vs_d33_order(self):
-        e = Engine()
-        s1 = e.deep_search._stale_result_score([self.ctx(1, [1])], WHITE)
-        s2 = e.deep_search._stale_result_score([self.ctx(1, [4])], WHITE)
-        self.assertEqual(s1, 880.0)
-        self.assertEqual(s2, 650.0)
-        self.assertGreater(s1, s2)
+    def test_root_strong_kill_850(self):
+        for v in (1, 2, 3):
+            e, b = engine_with([])
+            e.search.sw[7][7] = v
+            self.assertEqual(self._score(e, b), 850.0)
 
-    def test_opp_two_kill_unsolvable(self):
-        e = Engine()
-        # 我方一步（无杀）+ 对方一步：对方候选含两个 kill 级点 → 无解
-        seq = [self.ctx(1, [5]), self.ctx(0, [0, 0])]
-        score = e.deep_search._stale_result_score(seq, WHITE)
-        self.assertEqual(score, -920.0)
+    def test_root_weak_kill_650(self):
+        e, b = engine_with([])
+        e.search.sw[7][7] = 4
+        self.assertEqual(self._score(e, b), 650.0)
 
-    def test_opp_single_kill_counts_as_forcing_only(self):
-        e = Engine()
-        seq = [self.ctx(0, [0])]          # 对方单杀点：可先手占 → 逼应级
-        score = e.deep_search._stale_result_score(seq, WHITE)
-        self.assertGreaterEqual(score, -500.0)
-        self.assertLess(score, 0.0)
+    def test_opponent_five_strong_weak(self):
+        cases = ((0, -920.0), (1, -700.0), (2, -700.0), (3, -700.0), (4, -500.0))
+        for v, expected in cases:
+            e, b = engine_with([])
+            e.search.sb[7][7] = v
+            self.assertEqual(self._score(e, b), expected)
 
-    def test_regular_threat_diff(self):
-        e = Engine()
-        # 我方强活三 a2_bbb(9)=350；对方弱冲四 a1_ccc(8)=120；gear=3 → coef 1.0
-        seq = [self.ctx(1, [9]), self.ctx(0, [8])]
-        score = e.deep_search._stale_result_score(seq, WHITE)
-        self.assertAlmostEqual(score, 350.0 - 120.0)
+    def test_priority_order(self):
+        # 对方成五优先于我方强必杀
+        e, b = engine_with([])
+        e.search.sw[7][7] = 1
+        e.search.sb[7][8] = 0
+        self.assertEqual(self._score(e, b), -920.0)
+        # 我方成五优先于对方成五
+        e, b = engine_with([])
+        e.search.sw[7][7] = 0
+        e.search.sb[7][8] = 0
+        self.assertEqual(self._score(e, b), 920.0)
+        # 我方强必杀优先于对方弱必杀
+        e, b = engine_with([])
+        e.search.sw[7][7] = 3
+        e.search.sb[7][8] = 4
+        self.assertEqual(self._score(e, b), 850.0)
+        # 对方强必杀优先于我方弱必杀
+        e, b = engine_with([])
+        e.search.sw[7][7] = 4
+        e.search.sb[7][8] = 2
+        self.assertEqual(self._score(e, b), -700.0)
 
-    def test_no_candidates_is_zero(self):
-        e = Engine()
-        score = e.deep_search._stale_result_score([], WHITE)
-        self.assertEqual(score, 0.0)
+    def test_count_does_not_matter(self):
+        e, b = engine_with([])
+        for c in (7, 8, 9):
+            e.search.sb[7][c] = 1
+        self.assertEqual(self._score(e, b), -700.0)
+        e, b = engine_with([])
+        for c in (7, 8, 9):
+            e.search.sw[7][c] = 4
+        self.assertEqual(self._score(e, b), 650.0)
+
+    def test_no_kill_sum_and_tax(self):
+        e, b = engine_with([])
+        e.search.sw[7][7] = 5          # a1_bbb = 400
+        e.search.sb[7][8] = 13         # b_bbb = 60
+        with mock.patch.object(e.search, '_target_gear', return_value=3):
+            score = self._score(e, b)
+        expected = 0.05 * 340 + 475 * (1 - math.exp(-340 / 500.0))
+        self.assertAlmostEqual(score, expected)
+
+    def test_gear_coefficient(self):
+        e, b = engine_with([])
+        e.search.sw[7][7] = 5
+        e.search.sb[7][8] = 13
+        with mock.patch.object(e.search, '_target_gear', return_value=1):
+            score_attack = self._score(e, b)   # 黑方 ×1.2 → D=328
+        with mock.patch.object(e.search, '_target_gear', return_value=4):
+            score_defend = self._score(e, b)   # 黑方 ×0.9 → D=346
+        self.assertLess(score_attack, score_defend)
+        self.assertAlmostEqual(score_attack, 0.05 * 328 + 475 * (1 - math.exp(-328 / 500.0)))
+        self.assertAlmostEqual(score_defend, 0.05 * 346 + 475 * (1 - math.exp(-346 / 500.0)))
+
+    def test_negative_diff(self):
+        e, b = engine_with([])
+        e.search.sw[7][7] = 13         # 我方 b_bbb = 120
+        e.search.sb[7][8] = 5          # 对方 a1_bbb = 250
+        e.search.sb[8][8] = 5          # 对方 a1_bbb = 250
+        with mock.patch.object(e.search, '_target_gear', return_value=3):
+            score = self._score(e, b)
+        expected = -(0.05 * 380 + 475 * (1 - math.exp(-380 / 500.0)))
+        self.assertAlmostEqual(score, expected)
+
+    def test_occupied_cells_ignored(self):
+        e, b = engine_with([])
+        b[7][7] = WHITE          # 只改棋盘，不调用 on_move，隔离测试扫描跳过占位格
+        e.search.sw[7][7] = 5
+        with mock.patch.object(e.search, '_target_gear', return_value=3):
+            self.assertEqual(self._score(e, b), 0.0)
+
+    def test_no_clamp_extreme(self):
+        e, b = engine_with([])
+        for r in range(15):
+            for c in range(15):
+                e.search.sw[r][c] = 5
+        with mock.patch.object(e.search, '_target_gear', return_value=3):
+            score = self._score(e, b)
+        self.assertGreater(score, 1000.0)
+        self.assertAlmostEqual(score, 0.05 * 90000 + 475 * (1 - math.exp(-180)))
+
+    def test_ctx_branch_does_not_affect_score(self):
+        e, b = engine_with([])
+        e.search.sw[7][7] = 5
+        e.search.sb[7][8] = 13
+        old_style_ctx = [{'camp': 1, 'cand_sub_ids': [0, 0], 'gear': 3},
+                         {'camp': 0, 'cand_sub_ids': [1, 2, 3], 'gear': 3}]
+        with mock.patch.object(e.search, '_target_gear', return_value=3):
+            s1 = self._score(e, b, ctx_branch=old_style_ctx)
+            s2 = self._score(e, b, ctx_branch=[])
+        self.assertEqual(s1, s2)
+
+    def test_black_root_symmetry(self):
+        e, b = engine_with([])
+        e.search.sb[7][7] = 0
+        self.assertEqual(self._score(e, b, player=BLACK), 920.0)
+        e, b = engine_with([])
+        e.search.sw[7][7] = 0
+        self.assertEqual(self._score(e, b, player=BLACK), -920.0)
+
+    def test_empty_board_zero(self):
+        e, b = engine_with([])
+        with mock.patch.object(e.search, '_target_gear', return_value=3):
+            self.assertEqual(self._score(e, b), 0.0)
 
 
 class LeafScoreTest(unittest.TestCase):

@@ -8,7 +8,8 @@
 #       每轮双方模拟落子后检查温度，耗尽则评估当前叶子
 #   - 一层 = 白+黑一个完整回合；黑应手展开 BLACK_CAND_N 个候选，
 #     取对白方最不利的分支（因为候选评分是半成品，单点最凶会漏杀）
-#   - 叶子评估：成五 ±1000×过程权重；僵持 → 过程分（快杀/干净杀得分高）
+#   - 叶子评估：实际成五终局 ±1000；僵持叶子读当前棋盘两张状态表，
+#     按成五/强必杀/弱必杀优先级判定，其余全盘加和走平滑累进税
 #   - cache：按"已落子序列"缓存分支分，序列前缀复用（同序列只推一次）
 #
 # TODO（骨架保留，本次结构整理未实现）：
@@ -18,6 +19,7 @@
 # 依赖：search（候选/应手来源）、utils（棋盘常量）
 # ============================================================
 
+import math
 import random
 import os
 
@@ -45,37 +47,40 @@ class DeepSearch:
     CAND_N_FULL = 5
     CAND_N_MID = 3
     CAND_N_DEEP = 1
-    WIN_SCORE = 1000.0     # 成五基准分
+    WIN_SCORE = 1000.0     # 实际成五终局的基准分（区别于僵持叶子的成五点判定）
     # ------------------------------------------------------------
-    # 18 棋型结果分（无胜负 stale 叶值）——纯终局判定，不看路径。
-    # 索引 = 18 子类编号 0-17（search.SUBCLASS_NAMES 顺序）：
-    #   0-4 必杀：five/live4/d44/d34/d33
-    #   5-8 a1 眠四系，9-12 a2 活三系，13-16 b 潜力系，17 none
-    # 排名递减权重：候选榜第 0 个是第 1 名 → 满权重；第 2 名 0.5；……
-    RANK_W = (1.0, 0.5, 0.3, 0.2, 0.1)
-    # 我方候选点（我下一手用它）：子类威胁等级分。
-    # 第一档（0-4）——叶子处轮到我（先手），我任意一个 kill 级点即必胜/必胜结构：
-    #   five +900（直接成五）> live4 +880（活四不可解）> d44 +750 > d34 +700 > d33 +650
+    # 叶子评估基础分：仅 5~16 号点型参与全盘加和。
+    #   0-4 必杀点由必杀优先级单独判定，这里保留 0 占位；
+    #   5-8 a1 冲四系，9-12 a2 活三系，13-16 b 潜力系，17 none=0。
+    # 根决策方与对手使用两套分值，体现先手优势。
     MY_SUB_VALUE = (
-        900.0, 880.0, 750.0, 700.0, 650.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
         400.0, 350.0, 300.0, 250.0,
         350.0, 300.0, 220.0, 150.0,
         120.0, 90.0, 60.0, 30.0,
         0.0,
     )
-    # 对方候选点（对方下一手用它）：我是先手可抢先占/堵 → 单杀点按"逼应"级计，
-    # 而不是-1000；仅当对方 kill 级点 ≥2（双杀/活四成型）才无解。
     OPP_SUB_VALUE = (
-        400.0, 380.0, 450.0, 430.0, 400.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
         250.0, 200.0, 160.0, 120.0,
         200.0, 160.0, 120.0, 80.0,
         60.0, 45.0, 30.0, 15.0,
         0.0,
     )
-    OPP_KILL_UNSOLVABLE = -920.0   # 对方 kill 级点 ≥2 → 无解（防不住）
-    STALE_CLAMP = 500.0            # 常规威胁对比的 clamp（第一档大分不纳入）
+    # 必杀优先级分值（当前决策方视角）：
+    KILL_VALUE_WIN = 920.0           # 成五（0）
+    KILL_VALUE_STRONG = 850.0        # 我方强必杀（1/2/3）
+    KILL_VALUE_STRONG_OPP = -700.0   # 对方强必杀（已含 150 先手差）
+    KILL_VALUE_WEAK = 650.0          # 我方弱必杀（4）
+    KILL_VALUE_WEAK_OPP = -500.0     # 对方弱必杀（已含 150 先手差）
+    KILL_VALUE_WIN_OPP = -920.0      # 对方成五（0）
+    # 无必杀全盘和的平滑累进税参数：
+    LEAF_TAX_R = 0.05                # 长期边际保留比例
+    LEAF_TAX_S = 500.0               # 过渡尺度
+    # 无必杀时全盘差 D 的叶子分：
+    #   sign(D) * (r*|D| + (1-r)*S*(1 - exp(-|D|/S)))
     PRUNE_W = 0.02                 # 剪枝阈值：分支绝对路径权重低于此值不往下推（至少保留最强一支）
-    GEAR_OPP_COEF = {1: 1.2, 2: 1.1, 3: 1.0, 4: 0.9}  # 攻防档位：偏防放大对方威胁
+    GEAR_OPP_COEF = {1: 1.2, 2: 1.1, 3: 1.0, 4: 0.9}  # 攻防档位系数：乘在对手全盘和上
     THREAT_BONUS_WHITE = 100.0   # （遗留常量，不再用于叶子分）
     THREAT_BONUS_BLACK = 50.0    # （遗留常量，不再用于叶子分）
 
@@ -317,38 +322,89 @@ class DeepSearch:
         state = self.search.sb if player == BLACK else self.search.sw
         return state[r][c]
 
-    def _stale_result_score(self, ctx_seq, player):
-        """18 棋型结果分（纯终局判定，输入 = NN 路径上下文，不重扫盘面）：
-        从 ctx_seq（每步含 camp / cand_sub_ids）取【最近的】我方一步与对方一步
-        的候选子类，作为叶子局面的双方威胁结构：
-          - 我方最近 camp=1 步的 cand_sub_ids → 我方候选子类（排名序）；
-          - 对方最近 camp=0 步的 cand_sub_ids → 对方候选子类（排名序）。
-        - 我方任意 kill 级点（0-4）→ 先手必胜/必胜结构 → +650~+900；
-        - 对方 kill 级点 ≥2 → 双杀/活四成型，防不住 → -920；
-        - 对方 kill 级点 ==1 → 我先手可占掉，按"逼应"级计入常规对比；
-        - 无 kill → 常规威胁对比（SUB_VALUE × RANK_W 排名加权 × gear），clamp ±500。"""
-        my_subs = []
-        opp_subs = []
-        for ctx in reversed(ctx_seq):
-            subs = list(ctx.get('cand_sub_ids') or [])
-            if ctx.get('camp') == 1:
-                if not my_subs:
-                    my_subs = subs
-            else:
-                if not opp_subs:
-                    opp_subs = subs
-        my_kill = [s for s in my_subs if s <= 4]
-        if my_kill:
-            return max(self.MY_SUB_VALUE[s] for s in my_kill)
-        opp_kill = [s for s in opp_subs if s <= 4]
-        if len(opp_kill) >= 2:
-            return self.OPP_KILL_UNSOLVABLE
-        my_v = sum(self.MY_SUB_VALUE[s] * self.RANK_W[k] for k, s in enumerate(my_subs[:5]))
-        opp_v = sum(self.OPP_SUB_VALUE[s] * self.RANK_W[k] for k, s in enumerate(opp_subs[:5]))
-        gear = ctx_seq[-1].get('gear', 3) if ctx_seq else 3
-        opp_v *= self.GEAR_OPP_COEF.get(gear, 1.0)
-        v = my_v - opp_v
-        return max(-self.STALE_CLAMP, min(self.STALE_CLAMP, v))
+    def _scan_leaf_tables(self, board, my_state, opp_state):
+        """一次扫描双方状态表，返回 (我方档, 我方和, 对方档, 对方和)。
+
+        必杀档：0=无、1=弱必杀(4)、2=强必杀(1/2/3)、3=成五(0)。
+        只统计空点；5~16 号按双方基础分累加。
+        我方成五直接返回；双方都已有必杀时只比档位，总分丢弃。
+        """
+        my_tier = opp_tier = 0
+        my_total = opp_total = 0.0
+        my_values = self.MY_SUB_VALUE
+        opp_values = self.OPP_SUB_VALUE
+        for r in range(SIZE):
+            brow = board[r]
+            mrow = my_state[r]
+            orow = opp_state[r]
+            for c in range(SIZE):
+                if brow[c] != EMPTY:
+                    continue
+                v = mrow[c]
+                if v == 0:
+                    my_tier = 3
+                elif v <= 3:
+                    if my_tier < 2:
+                        my_tier = 2
+                elif v == 4:
+                    if my_tier < 1:
+                        my_tier = 1
+                elif v <= 16:
+                    my_total += my_values[v]
+                v = orow[c]
+                if v == 0:
+                    opp_tier = 3
+                elif v <= 3:
+                    if opp_tier < 2:
+                        opp_tier = 2
+                elif v == 4:
+                    if opp_tier < 1:
+                        opp_tier = 1
+                elif v <= 16:
+                    opp_total += opp_values[v]
+                if my_tier == 3:
+                    # 我方成五优先级最高，不需要继续确认对手
+                    return my_tier, 0.0, 0, 0.0
+                if my_tier > 0 and opp_tier > 0:
+                    # 双方都有必杀：只比档位，总分不再需要
+                    return my_tier, 0.0, opp_tier, 0.0
+        return my_tier, my_total, opp_tier, opp_total
+
+    def _stale_result_score(self, board, player):
+        """僵持叶子评估：读当前棋盘两张状态表，按目标设计判定。
+
+        优先级（当前决策方视角，命中即停，只看有无、不数个数）：
+          我方成五(0) → +920；对方成五(0) → -920；
+          我方强必杀(1/2/3) → +850；对方强必杀(1/2/3) → -700；
+          我方弱必杀(4) → +650；对方弱必杀(4) → -500；
+          双方都无 0~4 → 全盘 5~16 基础分求和：
+            D = 我方和 − 对方和 × 攻防系数
+            叶子分 = sign(D) × [r|D| + (1−r)S(1−e^(−|D|/S))]
+        不读历史 ctx 快照，也不使用候选名次权重。
+        """
+        my_state = self.search.sw if player == WHITE else self.search.sb
+        opp_state = self.search.sb if player == WHITE else self.search.sw
+        my_tier, my_total, opp_tier, opp_total = self._scan_leaf_tables(
+            board, my_state, opp_state)
+        if my_tier == 3:
+            return self.KILL_VALUE_WIN
+        if opp_tier == 3:
+            return self.KILL_VALUE_WIN_OPP
+        if my_tier == 2:
+            return self.KILL_VALUE_STRONG
+        if opp_tier == 2:
+            return self.KILL_VALUE_STRONG_OPP
+        if my_tier == 1:
+            return self.KILL_VALUE_WEAK
+        if opp_tier == 1:
+            return self.KILL_VALUE_WEAK_OPP
+        gear = self.search._target_gear(board, player)
+        opp_total *= self.GEAR_OPP_COEF.get(gear, 1.0)
+        diff = my_total - opp_total
+        x = abs(diff)
+        value = self.LEAF_TAX_R * x + (1.0 - self.LEAF_TAX_R) * self.LEAF_TAX_S * (
+            1.0 - math.exp(-x / self.LEAF_TAX_S))
+        return value if diff >= 0 else -value
 
     def _rollout(self, board, player, max_moves=10):
         """随机下到终局，返回 player 视角的胜负（1/-1/0）。
@@ -368,10 +424,10 @@ class DeepSearch:
 
     def _leaf_score(self, board, branch, status, player, ctx_branch=None):
         """叶子评估：以 player 视角计分。
-        - player 成五（win）→ +WIN_SCORE + WA×我方威胁 - WB×对方威胁
-        - 对方成五（lose）→ -WIN_SCORE - WB×对方威胁 + WA×我方威胁
-        - stale（温度尽僵持）→ 优先神经网络评估；不可用则 _stale_score
-        我方威胁权重高于对方；长链/连续威胁不再被稀释，黑白对称。"""
+        - 实际成五终局：player 成五 → +WIN_SCORE；对方成五 → -WIN_SCORE。
+        - stale（温度耗尽僵持）：默认纯算法读当前棋盘两张状态表；
+          神经网络路径属于实验能力，启用时仍使用旧的 ctx 分支特征。
+        纯算法口径详见 _stale_result_score。"""
         if self.collect_samples and ctx_branch:
             # 收集原始样本：分支上下文 + 视角方 + 叶子状态；
             # 标签由对局结束后真实胜负回传（强化学习式）
@@ -391,7 +447,7 @@ class DeepSearch:
         if self.leaf_eval_stats['reason'] is None:
             self.leaf_eval_stats['reason'] = self._nn_unavailable_reason or (
                 '已关闭' if not self.use_nn else '神经网络不可用')
-        return self._stale_result_score(ctx_branch, player)
+        return self._stale_result_score(board, player)
 
     def _nn_score(self, ctx_branch):
         """用神经网络评估分支路线分数；模型不可用/未训练/被禁用时返回 None。"""
