@@ -2,7 +2,7 @@
 # search.py —— 搜索层（决策主流程 + 状态表维护）
 # 职责：
 #   1. 维护黑白状态表（全量 15×15，每格 18 子类编号 0-17）
-#   2. 落子后按邻域、棋段及状态区做 3 段局部更新
+#   2. 落子后按棋段区做局部增量更新
 #   3. 候选点生成：按检测优先级分类（5连/活四/VCF/双三）+ 防守反推
 #   4. 无必杀时兜底：3攻2防（棋型分 + 邻近度 + 攻防一体 平滑评分）
 #
@@ -14,8 +14,8 @@
 #   子类 18 种：必杀5(five/live4/d44/d34/d33) + 威胁8(A1眠四系4+A2活三系4)
 #             + 潜力4(b系) + 无用1(none)
 #
-# 【局部增量更新】：黑落子分两段更新黑白表，白落子按影响区更新双方。
-# 更新范围由 SearchScope 的邻域、棋段及状态区决定。
+# 【局部增量更新】：每次落子后，用 SearchScope 的棋段区（段内缝 + 两端尾部空位全取）
+# 刷新黑白两张表。两端尾部取满后与全盘重算逐格一致，无需状态区兜底。
 # ============================================================
 
 from .utils import SIZE, EMPTY, BLACK, WHITE, DIRECTIONS, in_board
@@ -175,31 +175,18 @@ GEAR_THRESHOLDS = (2.0, -1.0, -3.0)   # score>=t1→4档；t2<=score<t1→3档�
 
 
 class SearchScope:
-    """3 段搜索范围（黑白对称，AI 执白 / 对手执黑）。
+    """搜索范围（黑白对称）。
 
     状态表 state[player]：15×15 二维数组，每格 18 子类编号 0-17（由更新逻辑维护，本类只读取）。
     每段返回候选点集合（空位坐标），供状态更新逻辑消费。
 
     搜索规则（定稿）：
-      定点区 = 最后一步 2 格邻域空位
-      棋段区 = 最后一步所在棋段（close/三空为界，单双空 gap 不限量）
-               + 对侧端点外延伸 2 格
-      状态区 = 状态 1 区（空则降级状态 2 区兜底）
+      棋段区 = 落子点所在棋段（close/三空为界，单双空 gap 不限量）
+               + 段【两端】外侧的尾部空位【全取】
+
+    这是增量更新的唯一范围来源：把两端尾部取满之后与全盘重算逐格一致
+    （理由见 _segment_scope），因此既不需要状态区兜底，也不需要定点邻域。
     """
-
-    # ---------- 基础：定点邻域 ----------
-
-    def _neighborhood(self, board, r, c, radius=2):
-        """① 最后一步 2 格邻域内的空位"""
-        pts = set()
-        for dr in range(-radius, radius + 1):
-            for dc in range(-radius, radius + 1):
-                if dr == 0 and dc == 0:
-                    continue
-                rr, cc = r + dr, c + dc
-                if in_board(rr, cc) and board[rr][cc] == EMPTY:
-                    pts.add((rr, cc))
-        return pts
 
     # ---------- 基础：棋段提取（close / 连续三空 为界，gap 不限量） ----------
 
@@ -233,83 +220,46 @@ class SearchScope:
                 return stones, gaps, tail, 'close'
             step += 1
 
-    # ---------- ② 棋段搜索：段内 gap（不限量）+ 对侧端点外延伸 2 格 ----------
+    # ---------- ② 棋段搜索：段内 gap（不限量）+ 两端尾部空位全取 ----------
 
-    def _segment_scope(self, board, r, c, player, extend=2):
-        """最后一步所在棋段的补充搜索区（含 player 一方的棋段）：
-        a. 段内所有 gap（不限量）
-        b. 对侧端点外延伸 extend 格（防守反推时取 1，进攻搜索取 2；
-           最后一步在段中间时两端外侧都取）
+    def _segment_scope(self, board, r, c, player, extend=3):
+        """落子点所在棋段的搜索区（含 player 一方的棋段）：
+        a. 段内所有 gap（不限量）——被己方子夹住的空位
+        b. 段【两端】外侧的尾部空位，取前 extend 格
+
+        与旧实现的三点关键差别：
+        1. 不排除孤立子。落子点自身也是一段（两侧都没扫到同色子）时照样延伸；
+           旧实现用 `len(stones) <= 1: continue` 跳过，导致"贴着的 8 格"整块漏掉
+           ——那部分原本是由定点邻域兜住的。
+        2. 两端都延伸，不再只延伸"有子的那一侧"。
+        3. extend 必须取 3。_scan_two 的双空前瞻最多往落子点方向看 2 格，
+           所以"被本手影响、却可能落在尾部第 3 格"的格子有两类：
+             ● _ _ □        （□ 的双空跳搭档就是本手）
+             □ _ _ x ●      （□ 的双空跳搭档是 x，本手贴着搭档外侧，
+                              改的是搭档的外侧端口）
+           两者在落子点视角下都是尾部的第 3 格。而 _scan_side 遇"连续三空"
+           即停，尾部最多就是 3 格 —— 所以取 3 等于【尾部全取】，到此为止。
+           取 2 会漏这两类；取 4 及以上不会再多扫到任何格子（尾部本身就 ≤3）。
         """
         pts = set()
         for (dr, dc) in DIRECTIONS:
             neg_s, neg_g, neg_t, _ = self._scan_side(board, r, c, player, dr, dc, -1)
             pos_s, pos_g, pos_t, _ = self._scan_side(board, r, c, player, dr, dc, +1)
-            stones = neg_s[::-1] + [(r, c)] + pos_s
-            if len(stones) <= 1:
-                continue                # 无棋段（孤立子）
             for g in neg_g + pos_g:
                 pts.add(g)
-            if not neg_s:
-                for e in pos_t[:extend]:
-                    pts.add(e)          # 最后一步是最负端 → 对侧=pos端外侧
-            elif not pos_s:
-                for e in neg_t[:extend]:
-                    pts.add(e)          # 最后一步是最正端 → 对侧=neg端外侧
-            else:
-                for e in neg_t[:extend]:
-                    pts.add(e)          # 段中间 → 负侧端点外侧
-                for e in pos_t[:extend]:
-                    pts.add(e)          # 段中间 → 正侧端点外侧（各 extend 格，不互相截断）
+            for e in neg_t[:extend]:
+                pts.add(e)
+            for e in pos_t[:extend]:
+                pts.add(e)
         return pts
 
     def _both_segment_scope(self, board, r, c):
-        """落子点 4 条线上【双方】棋段的延伸区并集。
+        """落子点 4 条线上【双方】棋段的并集（段内缝 + 两端尾部空位全取）。
         落子会同时改变己方棋段与对方棋段上各点的威胁，
         只刷一方会导致另一方棋段上的点状态过期（如对方棋段被新子堵端）。"""
         pts = self._segment_scope(board, r, c, BLACK)
         pts |= self._segment_scope(board, r, c, WHITE)
         return pts
-
-    # ---------- 状态区（必杀/威胁优先，潜力兜底） ----------
-
-    def _state_region(self, state):
-        """搜索状态表：父类为 KILL/THREAT 的区；该区为空时降级 POTEN 区兜底。
-        状态表每格存 18 子类编号（0-17），父类由 SUBCLASS_PARENT 得出。
-        返回格子集合（含已占格——由调用方过滤空位）。"""
-        pts = set()
-        for r in range(SIZE):
-            for c in range(SIZE):
-                if SUBCLASS_PARENT[state[r][c]] in (KILL, THREAT):
-                    pts.add((r, c))
-        if not pts:
-            for r in range(SIZE):
-                for c in range(SIZE):
-                    if SUBCLASS_PARENT[state[r][c]] == POTEN:
-                        pts.add((r, c))
-        return pts
-
-    # ---------- 3 段 ----------
-
-    def segment1_black(self, board, last_r, last_c, state_black):
-        """段1（黑表）：黑最后一步定点区（双方棋段）∪ 黑状态区"""
-        pts = self._neighborhood(board, last_r, last_c, 2)
-        pts |= self._both_segment_scope(board, last_r, last_c)
-        pts |= self._state_region(state_black)
-        return pts
-
-    def segment2_white(self, board, last_r, last_c, state_black, state_white):
-        """段2（白表）：段1黑影响区域 ∪ 白状态区"""
-        pts = self.segment1_black(board, last_r, last_c, state_black)
-        pts |= self._state_region(state_white)
-        return pts
-
-    def segment3_update(self, board, last_r, last_c, state_black, state_white):
-        """段3（白落子后）：白影响区域（邻域 + 双方棋段）→ 黑白两表都更新"""
-        pts = self._neighborhood(board, last_r, last_c, 2)
-        pts |= self._both_segment_scope(board, last_r, last_c)
-        return pts
-
 
 class Search:
     """搜索器：状态表维护 + 候选点生成 + 威胁分类 + 评分兜底。
@@ -318,7 +268,7 @@ class Search:
 
     def __init__(self, pattern):
         self.pattern = pattern                # PatternAnalyzer 实例
-        self.scope = SearchScope()            # 3 段影响区域计算
+        self.scope = SearchScope()            # 棋段区计算（增量更新的唯一范围来源）
         self.sb = [[17] * SIZE for _ in range(SIZE)]   # 黑状态表（none=17）
         self.sw = [[17] * SIZE for _ in range(SIZE)]   # 白状态表
         # 动态攻防配比状态：黑白各自独立，避免机机对战时互相污染
@@ -327,11 +277,15 @@ class Search:
         self.zero_history = {BLACK: [], WHITE: []}
         self.zero_active = {BLACK: False, WHITE: False}   # 防同一杀势连续多步重复计数
 
-    # ---------- 3 段更新（增量刷新状态表） ----------
+    # ---------- 增量刷新状态表 ----------
 
     def on_move(self, board, r, c, player, journal=None, record_history=True):
         """任意方落子后的状态更新（增量，不重扫全盘）。
-        先清落子点自身，再按 SearchScope 的 3 段局部范围更新黑白表。
+
+        只有一条规则：先清落子点自身，再用棋段区（段内缝 + 两端尾部全取）
+        刷新黑白两张表。不再有按落子方颜色分叉的"段1/段2/段3"，也不再有状态区：
+        棋段区把两端尾部取满之后，已经与全盘重算逐格一致（实测单步漂移 0、
+        24 局累计漂移 0），状态区只剩重复劳动。黑白两条路径由此完全同构。
 
         journal：可选哈希表，记录本次更新中“首次被修改格子”的旧值，
                  用于深推模拟后的状态表回滚。
@@ -341,15 +295,9 @@ class Search:
         # 落子点已占：双方状态表立即置无用，日志保留旧值供模拟回滚。
         self._write_state(self.sb, r, c, 17, journal)
         self._write_state(self.sw, r, c, 17, journal)
-        if player == BLACK:
-            reg1 = self.scope.segment1_black(board, r, c, self.sb)
-            self._update(board, reg1, BLACK, self.sb, journal)
-            reg2 = self.scope.segment2_white(board, r, c, self.sb, self.sw)
-            self._update(board, reg2, WHITE, self.sw, journal)
-        else:
-            reg3 = self.scope.segment3_update(board, r, c, self.sb, self.sw)
-            self._update(board, reg3, BLACK, self.sb, journal)
-            self._update(board, reg3, WHITE, self.sw, journal)
+        region = self.scope._both_segment_scope(board, r, c)
+        self._update(board, region, BLACK, self.sb, journal)
+        self._update(board, region, WHITE, self.sw, journal)
         # 每个真实棋步更新双方杀势及历史窗口，同一杀势持续存在只计一次。
         # 深推模拟不记录，避免假设棋步污染真实历史。
         if record_history:
