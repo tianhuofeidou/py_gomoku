@@ -82,6 +82,12 @@ SUBCLASS_PARENT = [
 
 assert len(SUBCLASS_NAMES) == 18 and len(SUBCLASS_PARENT) == 18
 
+# 含四的档位：成五(0)/活四(1)/双眠四(2)/四三(3) + A1 系单眠四·冲四(5-8)。
+# 用途：判定对手"堵四之后是否自己成四"（反四）——四三是三步杀，
+# 只逼得动对手一手；对手那一手若在堵掉冲四的同时自己成四，先手易主，
+# 三步杀跑不过。判据见 Search._d34_is_defensible。
+FOUR_GRADES = frozenset((0, 1, 2, 3, 5, 6, 7, 8))
+
 # 父类威胁优先级（数值越大越优先）—— search 分派依据
 # 进攻侧 / 防守侧交错，由 owner 定稿后锁定
 THREAT_PRIORITY = {
@@ -494,7 +500,11 @@ class Search:
         }
 
     def tactical_candidates(self, board, player):
-        """顶层与深推共用的强制攻防优先级；返回 (原因, 带权候选)。"""
+        """顶层与深推共用的强制攻防优先级；返回 (原因, 带权候选)。
+
+        特例：我方 VCF 档里的四三（d34）先过"反四"检测——若被对手的堵四兼成四
+        防住，就从必杀档降级（状态表不动，只降本次决策身份）；本档若因此变空，
+        自动让位给下一档（对方 VCF 的反推堵点）。判据见 _d34_is_defensible。"""
         c = self.candidates(board)
         mine, other = ('b', 'w') if player == BLACK else ('w', 'b')
         for owner, prefix, kind in (
@@ -502,6 +512,9 @@ class Search:
                 ('my', mine, 'vcf'), ('opp', other, 'vcf'),
                 ('my', mine, 'd33'), ('opp', other, 'd33')):
             points = c[prefix + '_' + kind]
+            if owner == 'my' and kind == 'vcf':
+                points = [p for p in points
+                          if not self._d34_is_defensible(board, p[0], p[1], player)]
             if not points:
                 continue
             if owner == 'my' or kind == 'five':
@@ -513,6 +526,52 @@ class Search:
                     defense[point] = max(defense.get(point, 0), weight)
             return owner + '-' + kind, defense
         return None, {}
+
+    # ---------- 四三「反四」特例（状态表不动，只降本次决策身份） ----------
+
+    def _d34_is_defensible(self, board, r, c, player):
+        """四三（d34）能否被对手的"反四"防住。
+
+        四三是三步杀：冲四逼应 → 活三转活四 → 补一端成五。它只逼得动对手一手，
+        所以判据就是那一手：模拟本手落子 → 求本手的成五点（对手必应点）→
+        看对手在该点能否成四（成五/活四/双眠四/四三 + A1 系单眠四）。
+        能成四即反四，先手易主，三步杀跑不过 → 该点降级，不再作为必杀候选。
+
+        边界：
+          - 成五点 ≥2（活四/双眠四）→ 对手一手堵不完 → 防不住，保持必杀；
+          - 只处理档位 3（d34）；live4(1)/d44(2) 是真两步杀，直接放行。
+        棋盘在 finally 恢复；状态表全程不写——表只描述棋型，不描述先手成败。"""
+        my_state = self.sw if player == WHITE else self.sb
+        if my_state[r][c] != 3:
+            return False
+        board[r][c] = player
+        try:
+            five_pts = self._five_points(board, r, c, player)
+            if len(five_pts) != 1:
+                return False
+            xr, xc = five_pts[0]        # 冲四的唯一成五点 = 对手必应点
+            return self._eval(board, xr, xc, 3 - player) in FOUR_GRADES
+        finally:
+            board[r][c] = EMPTY
+
+    @staticmethod
+    def _five_points(board, r, c, player):
+        """(r,c) 已落 player 子后，能补成五的空点（= 本手"四"的成五点）。
+
+        以 (r,c) 为基准枚举 4 个方向所有含它的 5 连窗口：窗口内 4 己方 + 1 空，
+        该空位即成五点。返回去重列表；长度 ≥2 表示活四或双眠四（对手一手堵不完）。"""
+        out = []
+        for dr, dc in DIRECTIONS:
+            for start in range(-4, 1):
+                cells = [(r + dr * (start + k), c + dc * (start + k)) for k in range(5)]
+                if any(not in_board(x, y) for x, y in cells):
+                    continue
+                vals = [board[x][y] for x, y in cells]
+                if vals.count(player) == 4 and vals.count(EMPTY) == 1:
+                    point = cells[vals.index(EMPTY)]
+                    if point not in out:
+                        out.append(point)
+        return out
 
     def _defense_candidates(self, board, r, c, is_kill=True, player=BLACK):
         """防守候选（带权重）——模拟落子反推必杀点 (r,c) 的堵法。
