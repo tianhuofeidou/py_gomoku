@@ -42,6 +42,8 @@
 - `scripts/sync_android_engine.py`：把桌面 `gomoku/` 同步到 Android 内嵌引擎，并提供 `--check` 供 CI 使用。
 - `.github/workflows/`：CI 与发布流程；构建产物不入库。
 - `gomoku/adapter/`：插件或进程调用适配层，应复用核心引擎并保持会话隔离。
+- `gomoku/protocol.py`：Gomocup/Piskvork 管道协议入口（stdin/stdout）。只做协议适配与坐标换算，选点一律委托 `service.ai_move`，不得在入口复制决策逻辑；坐标 0 基、`(X,Y)=(列,行)`、每次输出必须 flush。
+- `gomoku/tools/match.py`：对战台（自建管理器），驱动两个协议引擎批量对局并统计胜负；判胜复用 `gomoku.game.check_win`，不复制规则。
 - `gomoku/tests/`：正式回归测试。修复已确认的 Bug 时，必须增加能在旧实现失败、在新实现通过的测试。
 
 修改功能时应把逻辑放在所属模块，不跨层复制规则。若必须改变模块职责或公共返回结构，应先说明调用方影响。
@@ -137,7 +139,10 @@ python -m unittest gomoku.tests.test_rank_candidates -v
 node --test gomoku/tests/test_plugin.cjs
 ```
 
+- 本地运行测试、脚本、剖析和性能测量一律使用 **Python 3.14**：本机解释器在 `D:\python3.14\python.exe`。本机 `PATH` 上存在多个 `python` 副本，解析结果不保证指向本机 3.14 解释器，**不得**用于验收或性能测量；CI 与发布路径同样固定 3.14（macOS 打包用 3.12，见构建章节），性能数字必须标注解释器版本。
+- 本机 3.14 装有 `numpy`/`torch`，`gomoku/nn/` 相关用例可在本地实跑；CI 不安装任何依赖，这些用例在 CI 上会被跳过，**不能当作已被 CI 覆盖**。
 - 纯文档修改至少运行 `git diff --check`，并核对文档与当前实现一致。
+- 棋力对比测量必须用官方均衡开局集（`gomoku/data/official_openings.json`，来源为 Gomocup 管理器 Piskvork 的 `openings.txt`），同一条开局让双方各执黑一遍；不得用"同一开局只打一盘"或自造开局来声称强弱。测量脚本见 `gomoku/tools/match.py`，逐手诊断见 `gomoku/tools/review.py`。
 - 修改 Android 内嵌引擎后，必须运行 `python scripts/sync_android_engine.py --check`。
 - Android 产物发布前至少核对 `aapt2 dump badging` 的 versionCode/versionName/ABI 和 `apksigner verify`；有条件时在模拟器或真机安装启动。
 - Windows EXE 发布前必须核对包内 assets/GA 数据、确认未包含 `torch`/`numpy`/`gomoku.nn`，并做启动冒烟。

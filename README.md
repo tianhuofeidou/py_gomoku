@@ -235,16 +235,86 @@ gomoku/
 ├── core/           棋型、候选、深推和决策流程
 ├── adapter/        外部进程与插件适配
 ├── cli/            命令行和自弈入口
+├── tools/          对战台、GA 调参与评估脚本
 ├── tests/          Python 与本地插件回归测试
 ├── game.py         对局规则与状态
 ├── session.py      单局会话
 ├── service.py      AI 落子服务
+├── protocol.py     Gomocup/Piskvork 管道协议入口（stdin/stdout）
 └── memory.py       战绩与棋谱记忆
 android/            Android 客户端（Kotlin + Compose + Chaquopy）
 scripts/            引擎同步与发布辅助脚本
 play.py             图形界面入口
 play_cli.py         命令行入口
 ```
+
+### 与外部引擎对战（Gomocup / Piskvork 协议）
+
+引擎可以按 Gomocup 的管道协议启动，从而接入 Gomocup 生态（和现成引擎对战、被管理器驱动）：
+
+```bash
+# 协议入口：从标准输入读命令、向标准输出回坐标
+python -m gomoku.protocol
+
+# 自建对战台：驱动两个协议引擎互相对局（支持均衡开局与黑白互换）
+python -m gomoku.tools.match \
+    --black "python -m gomoku.protocol --t0 40" \
+    --white "path/to/pbrain-carbon.exe" --games 2 --swap --max-moves 120
+```
+
+- 坐标 0 基，协议里的 `(X, Y)` 对应内核 `(r, c) = (Y, X)`；
+- `START` 只接受 15×15，其它尺寸回 `ERROR`（管理器可另试尺寸）；`START/BEGIN/INFO/BOARD/TURN/END/ABOUT` 均已实现；
+- 每次输出立即 flush，且除协议内容外不向标准输出写任何东西（诊断走 stderr）；
+- 可执行文件名必须以 `pbrain-` 开头才会被管理器按管道协议识别；
+- `--t0` 用于覆盖推演温度：批量自对弈可降到 40 加速，正式对局保持默认 160。
+
+已知限制：**没有迭代加深**，单手耗时由温度档位决定（T0=160 实测中盘 avg 3.08s、最慢 17.2s），
+因此不能按 `INFO timeout_turn` 动态收缩预算；超时判定由管理器负责。
+
+打包成管理器可识别的引擎（文件名必须以 `pbrain-` 开头，且**必须是控制台程序**）：
+
+```bash
+# 注意：--add-data 的相对路径是按 --specpath 解析的，必须给绝对路径
+python -m PyInstaller --noconfirm --clean --onefile --console \
+  --name "pbrain-QifengXiaojing" \
+  --add-data "$(cygpath -w "$PWD/gomoku/data/ga_best_params.json");gomoku/data" \
+  --exclude-module torch --exclude-module numpy --exclude-module gomoku.nn \
+  --specpath build --workpath build/work --distpath dist \
+  pbrain.py
+```
+
+Windows PowerShell 下等价写法：
+
+```powershell
+$ga = (Resolve-Path 'gomoku\data\ga_best_params.json').Path
+python -m PyInstaller --noconfirm --clean --onefile --console `
+  --name "pbrain-QifengXiaojing" --add-data "$ga;gomoku/data" `
+  --exclude-module torch --exclude-module numpy --exclude-module gomoku.nn `
+  --specpath build --workpath build/work --distpath dist pbrain.py
+```
+
+产物 `dist/pbrain-QifengXiaojing.exe` 可直接放进 Piskvork 管理器，或用上面的对战台驱动：
+
+```bash
+python -m gomoku.tools.match \
+    --black "dist/pbrain-QifengXiaojing.exe" \
+    --white "path/to/pbrain-carbon.exe" --openings 30 --parallel 4
+```
+
+批量模式会打印 A（`--black` 指定引擎）的胜率、Wilson 95% 置信区间与 Elo 差估计，
+并可 `--json` 落盘——这是后续任何棋力改动的验收口径。
+
+开局来源默认用**官方均衡开局集**（`gomoku/data/official_openings.json`）：Gomocup 官方管理器
+Piskvork 的 `openings.txt` 共 41 条，其中 40 条适用于 15 路棋盘（1 条偏移超出棋盘，单独列出）。
+锦标赛里由管理器自动摆前 3/5 手以保证同一对 AI 多盘不重样；用同一套开局做 A/B，我们的数字
+才与 Gomocup 口径一致。需要时可 `--opening-set random` 切回随机开局（确定性种子）。
+
+**棋力基线：重测中。** 此前记录的官方开局基线数字**已作废**——当时的对战台在启用自动开局时
+只把最后一颗开局子用 `TURN` 发给引擎（正确做法是按 Piskvork 的实现发 `BOARD` 并附上全部石子），
+导致引擎看不见前面的开局子、大量对局以"落子非法"提前结束（实测 40 局里 34 局如此）。
+管理器已按 `source/protocol.cpp` 的写法修正，并新增回归用例
+`test_game_with_official_opening_stays_legal`；三档（T0=40/160/240）的官方口径基线的重测结果
+以 `gomoku/tools/match.py` 的 `--json` 输出为准，测完后回填本段。
 
 ### 运行测试
 

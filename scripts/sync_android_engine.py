@@ -5,6 +5,8 @@
 - 唯一事实来源是仓库根目录的 gomoku/；
 - 只同步移动端需要的文件，不同步 tests/nn/cli/adapter；
 - tools/ga_tune.py 必须使用移动端占位实现，避免引入桌面 GA 调参链路；
+- protocol.py（Gomocup 管道协议入口）属于桌面/Gomocup 侧能力，不在同步清单内，
+  移动端通过自己的界面与 android_api.py 驱动引擎；
 - android/app/src/main/python/android_api.py 是 Android 专用文件，本脚本不处理。
 
 用法：
