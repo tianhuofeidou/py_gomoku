@@ -282,7 +282,7 @@ class FatalRatioTest(unittest.TestCase):
         with mock.patch.object(e.deep_search, '_candidate_points',
                                side_effect=fake_candidate_points), \
                 mock.patch.object(e.deep_search, '_recursive',
-                                  return_value=(0.0, 0, 2, 1, 10, 0)):
+                                  return_value=(0.0, 0, 2, 1, 10, 0, ())):
             ranked = e.deep_search.rank_candidates(board, [root], BLACK)
 
         self.assertEqual(len(ranked), 1)

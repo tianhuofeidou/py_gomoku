@@ -8,6 +8,7 @@
   - 三种模式：人机(ai) / 人人(pvp) / 机机(vs)
   - 人机可换边：人类执黑先手 或 人类执白后手
   - 引擎（纯算法）自动落子，并展示推荐全候选
+  - 人人对战可按需调用 AI 分析当前局面，但不会自动落子
   - 悔棋 / 认输 / 求和 / 新对局
   - 对局结束立即可见；胜负自动写入全局记忆（totals/lossByType/badLines/goodLines）
 """
@@ -24,7 +25,7 @@ from gomoku.session import PlaySession
 from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.5.0'
+APP_TITLE = '棋逢小鲸 v1.6.0'
 
 
 def _resource_path(relative_path):
@@ -57,6 +58,8 @@ class GomokuApp:
         '存在必败': 'state_exists_lose',
         '必败': 'state_lose',
     }
+    # AI 辅助候选按排名由亮到暗显示；不用透明色，保证 tkinter 跨平台一致。
+    HINT_COLORS = ('#fff59d', '#ffe082', '#ffca4d', '#dfa637', '#ad7c2d')
 
     def __init__(self, root):
         self.root = root
@@ -67,12 +70,13 @@ class GomokuApp:
             # 图标缺失不影响源码调试或正常对弈。
             pass
         self.root.geometry('1120x780')      # 初始窗口；棋盘随窗口自适应缩放
-        self.root.minsize(720, 560)
+        self.root.minsize(900, 560)        # 为左侧面板、候选日志和完整棋盘保留空间
         self.session = PlaySession('local')
         # 默认纯算法（神经网络已全局停用）
         self.session.engine.use_decision_net = False
         self.session.engine.deep_search.use_nn = False
         self.last_move = None
+        self.analysis_hints = []
         self.ai_thinking = False
         self._build_ui()
         self._new_game(mode='ai', human_player=BLACK)
@@ -98,28 +102,32 @@ class GomokuApp:
         ttk.Separator(panel, orient='horizontal').grid(row=9, column=0, sticky='ew', pady=8)
         for i, (label, cmd) in enumerate([('新对局', self._new_game_btn), ('悔棋', self._undo),
                                           ('认输', self._resign), ('求和', self._draw),
-                                          ('机机走一步', self._vs_step), ('查看记忆', self._show_memory)]):
+                                          ('机机走一步', self._vs_step)]):
             ttk.Button(panel, text=label, command=cmd).grid(row=10 + i, column=0, sticky='ew', pady=2)
+        self.assist_button = ttk.Button(panel, text='AI辅助分析', command=self._pvp_assist)
+        self.assist_button.grid(row=15, column=0, sticky='ew', pady=2)
+        ttk.Button(panel, text='查看记忆', command=self._show_memory).grid(
+            row=16, column=0, sticky='ew', pady=2)
 
         # AI 棋力档位（温度银行预算映射；越高推演越深越慢，下一手生效）
-        ttk.Label(panel, text='AI 棋力').grid(row=16, column=0, sticky='w', pady=(10, 2))
+        ttk.Label(panel, text='AI 棋力').grid(row=17, column=0, sticky='w', pady=(10, 2))
         cur = DeepSearch.T0
         self.temp_var = tk.IntVar(value=min(TEMP_LEVELS, key=lambda x: abs(x[1] - cur))[1])
         for i, (name, t0, note) in enumerate(TEMP_LEVELS):
             ttk.Radiobutton(panel, text='%s（%s）' % (name, note), value=t0,
                             variable=self.temp_var,
-                            command=self._on_temp_change).grid(row=17 + i, column=0, sticky='w')
+                            command=self._on_temp_change).grid(row=18 + i, column=0, sticky='w')
 
-        ttk.Separator(panel, orient='horizontal').grid(row=20, column=0, sticky='ew', pady=(8, 5))
+        ttk.Separator(panel, orient='horizontal').grid(row=21, column=0, sticky='ew', pady=(8, 5))
         self.leaf_eval_var = tk.StringVar(value='叶子评估：尚未触发')
         self.decision_eval_var = tk.StringVar(value='决策选点：纯算法')
         ttk.Label(panel, textvariable=self.leaf_eval_var, justify=tk.LEFT,
-                  wraplength=210).grid(row=21, column=0, sticky='w')
-        ttk.Label(panel, textvariable=self.decision_eval_var, justify=tk.LEFT,
                   wraplength=210).grid(row=22, column=0, sticky='w')
+        ttk.Label(panel, textvariable=self.decision_eval_var, justify=tk.LEFT,
+                  wraplength=210).grid(row=23, column=0, sticky='w')
 
         self.turn_label = ttk.Label(panel, text='', justify=tk.LEFT, wraplength=210)
-        self.turn_label.grid(row=23, column=0, sticky='w', pady=8)
+        self.turn_label.grid(row=24, column=0, sticky='w', pady=8)
 
         # 宽度按最长候选行预留，保证“序号 + 坐标 + 分数 + 选中/必胜标记”单行显示。
         self.info = tk.Text(self.root, width=50, height=26, state=tk.DISABLED)
@@ -187,7 +195,19 @@ class GomokuApp:
         for (r, c) in [(3, 3), (3, 11), (11, 3), (11, 11), (7, 7)]:
             x, y = self._cell_xy(r, c)
             cv.create_oval(x - star, y - star, x + star, y + star, fill='#333', outline='')
-        # ⑤ 棋子
+        # ⑤ 人人对战的 AI 辅助候选：排名越高光圈越亮，数字对应信息区名次。
+        for i, hint in enumerate(self.analysis_hints[:5]):
+            r, c = hint['r'], hint['c']
+            if not (0 <= r < self.SIZE and 0 <= c < self.SIZE) or board[r][c] != EMPTY:
+                continue
+            x, y = self._cell_xy(r, c)
+            rad = max(7, cell * 0.31)
+            color = self.HINT_COLORS[min(i, len(self.HINT_COLORS) - 1)]
+            cv.create_oval(x - rad, y - rad, x + rad, y + rad,
+                           fill=color, outline='#8a5a10', width=max(1, cell // 12))
+            cv.create_text(x, y, text=str(i + 1), fill='#4b350f',
+                           font=('Arial', max(8, cell // 3), 'bold'))
+        # ⑥ 棋子
         for r in range(self.SIZE):
             for c in range(self.SIZE):
                 v = board[r][c]
@@ -198,7 +218,7 @@ class GomokuApp:
                 rad = cell * 0.42
                 cv.create_oval(x - rad, y - rad, x + rad, y + rad,
                                fill=color, outline='#333')
-        # ⑥ 上一步标记
+        # ⑦ 上一步标记
         if self.last_move:
             r, c = self.last_move
             if 0 <= r < self.SIZE and 0 <= c < self.SIZE and board[r][c] != EMPTY:
@@ -225,6 +245,7 @@ class GomokuApp:
         if not res['ok']:
             self._log(res['error'])
             return
+        self.analysis_hints = []
         self.last_move = (r, c)
         who = '你' if game.mode == 'ai' else ('黑' if player == BLACK else '白')
         self._log('【%s】落子 %s%d' % (who, COLUMNS[c], r + 1))
@@ -236,6 +257,17 @@ class GomokuApp:
         if self.ai_thinking or game.mode != 'vs' or game.winner is not None:
             return
         self._run_ai(lambda: self._ai_calc(game.current_player()))
+
+    def _pvp_assist(self):
+        """人人对战中按需分析当前行棋方，只展示建议，不代替玩家落子。"""
+        game = self.session.game
+        if self.ai_thinking or game.mode != 'pvp' or game.winner is not None:
+            return
+        player = game.current_player()
+        self.analysis_hints = []
+        self._draw_board(game.board())
+        self._run_ai(lambda: self._analysis_calc(player), apply=self._analysis_apply,
+                     progress='🔎 分析中')
 
     def _after_move(self, ai_followup):
         game = self.session.game
@@ -261,6 +293,19 @@ class GomokuApp:
         leaf_status = self.session.engine.deep_search.leaf_eval_status()
         return player, (r, c), ranked, net_used, leaf_status, time.perf_counter() - t0
 
+    def _analysis_calc(self, player):
+        """AI 辅助分析（在子线程执行），返回候选但不向棋局落子。"""
+        game = self.session.game
+        if game.winner is not None or game.mode != 'pvp' or player != game.current_player():
+            return None
+        t0 = time.perf_counter()
+        out = self.session.analyze(player)
+        if not out:
+            return None
+        move, ranked, net_used = out
+        leaf_status = self.session.engine.deep_search.leaf_eval_status()
+        return player, move, ranked, net_used, leaf_status, time.perf_counter() - t0
+
     @staticmethod
     def _fmt_score(s):
         """分支分格式化：1e9 量级 = 必胜/必防直取；其余保留整数。"""
@@ -269,6 +314,7 @@ class GomokuApp:
     def _ai_apply(self, calc):
         """AI 计算结果上屏（主线程）：落子标记 + 结构化候选打分。"""
         player, (r, c), ranked, net_used, leaf_status, dt = calc
+        self.analysis_hints = []
         self.last_move = (r, c)
         who = '黑' if player == BLACK else '白'
         mode = leaf_status.get('mode')
@@ -283,28 +329,60 @@ class GomokuApp:
         self.decision_eval_var.set('决策选点：纯算法')
         tag = leaf_tag
         self._log('【%s】AI 思考 %.1fs → 落子 %s%d%s' % (who, dt, COLUMNS[c], r + 1, tag))
-        if ranked and len(ranked) > 1:
+        self._show_ranked(ranked, (r, c), '选中')
+
+    def _analysis_apply(self, calc):
+        """把人人对战的辅助分析结果写入界面，不改变最后落子标记。"""
+        player, move, ranked, net_used, leaf_status, dt = calc
+        who = '黑' if player == BLACK else '白'
+        mode = leaf_status.get('mode')
+        total = leaf_status.get('total', 0)
+        if mode == 'not_triggered':
+            leaf_text = '未触发（无需叶子估值）'
+            leaf_tag = ' [叶子未触发]'
+        else:
+            leaf_text = '纯算法（%d 个叶子）' % total
+            leaf_tag = ' [纯算法 %d]' % total
+        self.leaf_eval_var.set('叶子评估：' + leaf_text)
+        self.decision_eval_var.set('辅助决策：纯算法')
+        if move is None:
+            self._log('【%s】AI辅助分析 %.1fs · 没有合法候选%s' % (who, dt, leaf_tag))
+            return
+        r, c = move
+        self.analysis_hints = list(ranked[:5])
+        self._log('【%s】AI辅助分析 %.1fs · 首选 %s%d%s' %
+                  (who, dt, COLUMNS[c], r + 1, leaf_tag))
+        self._show_ranked(ranked, move, '推荐')
+
+    def _show_ranked(self, ranked, selected, selected_label):
+        """统一展示 AI 落子或辅助分析的前五个候选及五态结果。"""
+        if ranked:
             entries = []
             for i, x in enumerate(ranked[:5]):
-                mark = '   ← 选中' if (x['r'], x['c']) == (r, c) else ''
+                mark = '   ← %s' % selected_label if (x['r'], x['c']) == selected else ''
                 state_name = x.get('state_name') or '无'
-                tag = '' if state_name == '无' else '  ⚔%s' % state_name
+                state_tag = '' if state_name == '无' else '  ⚔%s' % state_name
                 text = '  %d. %s%d  分 %s%s%s' % (i + 1, COLUMNS[x['c']], x['r'] + 1,
-                                                  self._fmt_score(x['score']), mark, tag)
+                                                  self._fmt_score(x['score']), mark, state_tag)
                 entries.append((text, self.STATE_TAGS.get(state_name, 'state_none')))
             self._log_candidates(entries)
         if ranked and all(x.get('state') == -2 for x in ranked):
-            self._log_tagged('⚠ 全部候选均发现败势分支，局面高危', 'state_exists_lose')
+            self._log_tagged('⚠ 全部候选的下一手均有失误风险，尚非确定必败', 'state_exists_lose')
+        elif ranked and all(x.get('state') == -1 for x in ranked):
+            self._log_tagged('⚠ 本次搜索中全部候选均必败，按候选分选择兜底', 'state_lose')
 
-    def _run_ai(self, fn):
-        """后台线程跑 AI（fn 为纯计算），主线程保持响应不冻结；
+    def _run_ai(self, fn, apply=None, progress='🤔 思考中'):
+        """后台线程跑 AI 计算或辅助分析（fn 为纯计算），主线程保持响应不冻结；
         完成后回到主线程画盘收尾。思考期间点棋/按钮被 ai_thinking 保护拦下；
-        状态栏实时显示已思考秒数（0.1s 刷新），落子后日志记录总耗时。"""
+        状态栏实时显示已思考秒数（0.1s 刷新），完成后日志记录总耗时。"""
         if self.ai_thinking:
             return
+        if apply is None:
+            apply = self._ai_apply
         self.ai_thinking = True
         self._ai_start = time.perf_counter()
-        self.turn_label['text'] = '🤔 思考中… 0.0s'
+        self.assist_button['state'] = tk.DISABLED
+        self.turn_label['text'] = progress + '… 0.0s'
         self.root.update_idletasks()
         box = {}
 
@@ -324,11 +402,11 @@ class GomokuApp:
                 self.ai_thinking = False
                 calc = box['ok']
                 if calc:
-                    self._ai_apply(calc)
+                    apply(calc)
                 self._refresh()
                 return
             # 实时刷新思考秒数（不创建新线程，仅更新 label）
-            self.turn_label['text'] = '🤔 思考中… %.1fs' % (time.perf_counter() - self._ai_start)
+            self.turn_label['text'] = '%s… %.1fs' % (progress, time.perf_counter() - self._ai_start)
             self.root.after(50, poll)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -353,6 +431,7 @@ class GomokuApp:
         mode = mode or self.mode_var.get()
         self.session.reset(mode=mode, human_player=hp)
         self.last_move = None
+        self.analysis_hints = []
         self.leaf_eval_var.set('叶子评估：尚未触发')
         self.decision_eval_var.set('决策选点：纯算法')
         self._log('新对局 · %s · 人类执%s%s' % (MODE_LABEL[mode], '黑' if hp == BLACK else '白',
@@ -373,6 +452,7 @@ class GomokuApp:
             self.session.undo('last')
         else:
             self.session.undo('human')
+        self.analysis_hints = []
         self.last_move = (game.moves[-1]['r'], game.moves[-1]['c']) if game.moves else None
         self._log('悔棋')
         self._refresh()
@@ -384,6 +464,7 @@ class GomokuApp:
         if game.winner is not None:
             return
         game.exec('resign', 'human')
+        self.analysis_hints = []
         self._log(self._end_text())
         self._refresh()
 
@@ -394,6 +475,7 @@ class GomokuApp:
         if game.winner is not None:
             return
         game.exec('draw', 'human')
+        self.analysis_hints = []
         self._log(self._end_text())
         self._refresh()
 
@@ -440,6 +522,8 @@ class GomokuApp:
     def _refresh(self):
         g = self.session.game
         self._draw_board(g.board())
+        self.assist_button['state'] = (tk.NORMAL if g.mode == 'pvp' and not self.ai_thinking
+                                       and g.winner is None else tk.DISABLED)
         if g.winner is not None:
             self.turn_label['text'] = self._end_text() + '（点「新对局」重来）'
         elif g.mode == 'ai':

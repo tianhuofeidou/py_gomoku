@@ -182,6 +182,32 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(one.engine.moves, [])
         self.assertEqual(two.engine.moves, [])
 
+    def test_pvp_analysis_returns_candidates_without_placing_move(self):
+        session = PlaySession('pvp-analysis')
+        session.reset(mode='pvp')
+        self.assertTrue(session.place(7, 7, BLACK)['ok'])
+        before_moves = copy.deepcopy(session.game.moves)
+        ranked = [{'r': 6, 'c': 6, 'score': 42.0, 'state': 0, 'state_name': '无'}]
+        analysis = {'part4_result': {'move': (6, 6), 'ranked': ranked}}
+        with patch.object(session.engine, 'analyze_turn', return_value=analysis) as analyze:
+            move, actual_ranked, net_used = session.analyze()
+        self.assertEqual(move, (6, 6))
+        self.assertEqual(actual_ranked, ranked)
+        self.assertFalse(net_used)
+        self.assertEqual(session.game.moves, before_moves)
+        self.assertEqual(session.game.current_player(), WHITE)
+        analyze.assert_called_once_with(session.game.board(), WHITE)
+
+    def test_pvp_analysis_empty_board_recommends_center_without_placing(self):
+        session = PlaySession('pvp-empty-analysis')
+        session.reset(mode='pvp')
+        move, ranked, net_used = session.analyze()
+        self.assertEqual(move, (7, 7))
+        self.assertEqual([(x['r'], x['c']) for x in ranked], [(7, 7)])
+        self.assertFalse(net_used)
+        self.assertEqual(session.game.moves, [])
+        self.assertEqual(session.engine.moves, [])
+
     def test_zero_history_expires_by_ply(self):
         board, e = self.board_engine([])
         e.search.sb[0][0] = 0

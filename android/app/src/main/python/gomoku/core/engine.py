@@ -178,7 +178,9 @@ class Engine:
             result['part4_result'] = {
                 'type': 'direct',
                 'move': first,
-                'ranked': [{'r': first[0], 'c': first[1], 'score': 1e9}],
+                'ranked': [self.deep_search._candidate_result(
+                    first[0], first[1], 1e9,
+                    self.deep_search.STATE_WIN if cand['reason'] == 'my-five' else 0)],
             }
         else:
             if cand['type'] == 'direct' and isinstance(pts, list):
@@ -189,7 +191,7 @@ class Engine:
                 result['part4_result'] = {
                     'type': 'direct',
                     'move': (r0, c0),
-                    'ranked': [{'r': r0, 'c': c0, 'score': 1e9}],
+                    'ranked': [self.deep_search._candidate_result(r0, c0, 1e9)],
                 }
             else:
                 ranked = self.deep_search.rank_candidates(board, pts, player)

@@ -2,7 +2,7 @@
 """对局会话：把 Game 状态机 + 同步好的引擎实例包装成一次对局。
 
 GUI（play.py）与 CLI（play_cli.py）共用：落子后同步引擎内部状态，
-AI 轮次用 service.ai_move 计算并落子。
+AI 轮次用 service.ai_move 计算并落子；人人对战可只分析当前局面而不落子。
 """
 from gomoku.game import Game, BLACK, WHITE
 from gomoku import service
@@ -44,6 +44,32 @@ class PlaySession:
         if not res['ok']:
             raise RuntimeError(res['error'])
         return (r, c), ranked, net_used
+
+    def analyze(self, player=None):
+        """分析当前行棋方并返回推荐点和候选评分，不改变棋局或落子历史。"""
+        game = self.game
+        if game.winner is not None:
+            return None
+        if player is None:
+            player = game.current_player()
+        if player != game.current_player():
+            return None
+        board = game.board()
+        # 空盘没有棋型可供 fallback 评分，沿用引擎正式开局策略推荐天元，
+        # 给出归一化展示分；从第二手起进入完整 analyze_turn 深推并返回多候选。
+        if not game.moves:
+            self.engine.deep_search.reset_leaf_eval_stats()
+            self.engine.decision_net_used = False
+            opening = self.engine.compute_move(board, player)
+            if isinstance(opening, list) and opening:
+                r, c = opening[0]
+                ranked = [self.engine.deep_search._candidate_result(r, c, 100.0)]
+                return (r, c), ranked, False
+        result = self.engine.analyze_turn(board, player)
+        part4 = result['part4_result']
+        move = part4.get('move')
+        ranked = part4.get('ranked') or []
+        return move, ranked, self.engine.decision_net_used
 
     def undo(self, by='human'):
         if by == 'human':
