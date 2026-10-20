@@ -3,7 +3,7 @@
 # 职责：对候选点做多步递归推演，返回分支分最高的落子点
 #
 # 核心机制：
-#   - 温度银行：每手决策一个温度总预算 T0，每层推演按候选权重扣温
+#   - 温度银行：每个根候选从 T0 开始，沿每条路径按候选权重扣温
 #       DT = DT_M*((100-w)/100)^DT_POW + DT_N（权重高→耗温少）
 #       每轮双方模拟落子后检查温度，耗尽则评估当前叶子
 #   - 一层 = 本方+对方一个完整回合；候选与分数保留路径权重回溯，
@@ -35,7 +35,7 @@ class DeepSearch:
     # 本机实测（24 个 KataGo 中盘局面单步耗时）：80→avg 0.30s(最慢 1.2s)、
     # 160→avg 3.08s(最慢 17.2s)、240→avg 15.2s(最慢 97.1s)。
     # 更早用 3 个局面测过 320：复杂局面 90s+ 仍未完成 → 档位定稿 80/160/240。
-    T0 = 160.0            # 初始温度（每手决策总预算，默认=标准档，GUI 可切 80/160/240）
+    T0 = 160.0            # 路径初始温度（默认标准档，GUI 可切 80/160/240；不是全局节点额度）
     DT_M = 400.0           # 单层耗温系数 DT = DT_M*((100-w)/100)^DT_POW + DT_N
     DT_POW = 2.0           # 幂次：控制曲线形状（GA 可调）
     DT_N = 3.0             # 基础耗温
@@ -94,10 +94,13 @@ class DeepSearch:
         self._nn_model = None         # 已加载的 NN 模型缓存
         self._nn_load_tried = False   # 加载失败后不在每个叶子重复尝试
         self._nn_unavailable_reason = None
+        self._root_pass = None  # 仅本次固定上下文共享，返回后释放。
         self.reset_leaf_eval_stats()
 
     def reset_leaf_eval_stats(self):
         """重置本次决策的叶子评估统计，供界面展示实际使用路径。"""
+        if self._root_pass is not None:
+            return  # 筛选和补分累计本次实际叶子计算，不重复清零。
         self.leaf_eval_stats = {
             'nn': 0,
             'heuristic': 0,
@@ -273,7 +276,7 @@ class DeepSearch:
     @classmethod
     def _candidate_result(cls, r, c, score, state=0, fatal_ratio=0.0):
         """候选对外字段只由该实际落子节点的一个五态结论导出。"""
-        return {'r': r, 'c': c, 'score': score, 'state': state,
+        return {'r': r, 'c': c, 'score': score, 'score_complete': True, 'state': state,
                 'state_name': cls._state_name(state),
                 'child_state': cls._state_child_state(state),
                 'forced': cls._state_forced(state), 'fatal_ratio': fatal_ratio}
@@ -290,7 +293,8 @@ class DeepSearch:
     @classmethod
     def _pick_key_state(cls, state, score):
         """决策排序键：先比状态档位，同档比候选分。"""
-        return (cls.STATE_ORDER.get(state, cls.STATE_ORDER[cls.STATE_NONE]), score)
+        return (cls.STATE_ORDER.get(state, cls.STATE_ORDER[cls.STATE_NONE]),
+                float('-inf') if score is None else score)
 
     @staticmethod
     def _weighted_average(items):
@@ -419,6 +423,16 @@ class DeepSearch:
         return 0.0
 
     def _leaf_score(self, board, branch, status, player, ctx_branch=None):
+        context = self._root_pass
+        if context is None or not context['memo_leaves']:
+            return self._leaf_score_impl(board, branch, status, player, ctx_branch)
+        key = (tuple(branch), status, player)
+        if key not in context['leaves']:
+            context['leaves'][key] = self._leaf_score_impl(
+                board, branch, status, player, ctx_branch)
+        return context['leaves'][key]
+
+    def _leaf_score_impl(self, board, branch, status, player, ctx_branch=None):
         """叶子评估：以 player 视角计分。
         - 实际成五终局：player 成五 → +WIN_SCORE；对方成五 → -WIN_SCORE。
         - stale（温度耗尽僵持）：默认纯算法读当前棋盘两张状态表；
@@ -537,7 +551,36 @@ class DeepSearch:
 
     # ---------- 递归推演 ----------
 
-    def _recursive(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0, path_w=1.0):
+    def _mark_state_cut(self):
+        """早停只确定硬态，不能缓存未完成的累计分冒充完整分。"""
+        context = self._root_pass
+        context['partial_roots'].add(context['root'])
+        if context['stack']:
+            context['stack'][-1] = False
+
+    def _recursive(self, board, player, opp, main_player, temp, branch, ctx_branch,
+                   cache, trace=False, indent=0, path_w=1.0):
+        context = self._root_pass
+        args = (board, player, opp, main_player, temp, branch, ctx_branch, cache, trace, indent)
+        if context is None or context['mode'] == 'full':
+            return self._recursive_impl(*args, path_w=path_w)
+        key = tuple((r, c) for r, c, _p, _w in branch)
+        context['stack'].append(key not in context['incomplete'])
+        try:
+            value = self._recursive_impl(*args, path_w=path_w)
+        except BaseException:
+            context['stack'].pop()
+            raise
+        complete = context['stack'].pop()
+        if complete:
+            context['complete'][key] = value
+        else:
+            context['incomplete'].add(key)
+            if context['stack']:
+                context['stack'][-1] = False
+        return value
+
+    def _recursive_impl(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0, path_w=1.0):
         """递归推演：player 落一子（候选）→ opp 应一手 → 递归下一层。
         一层 = 双方完整回合；回合后温度耗尽则进行叶子评估。
         模拟落子后同步更新状态表（journal 哈希表回滚），保证候选点/必杀检测
@@ -548,7 +591,7 @@ class DeepSearch:
         内部返回 (分支分, 硬状态, n_win, n_lose, n_total, 硬状态, 直接候选状态)。
         返回值描述 player 从本层候选中最优选择的结果，两个硬状态字段同源；
         末项保留每个实际落子节点的五态，供上一轮读取本方孙节点的硬败风险。
-        不通过软状态翻转传播证据；对外 ranked/JSON 结构不变。
+        不通过软状态翻转传播证据；内部七项返回结构不变。
         """
         key = tuple((r, c) for (r, c, _p, _w) in branch)
         if key in cache:
@@ -658,6 +701,10 @@ class DeepSearch:
                         ctx_branch.pop()
                         board[or_][oc] = EMPTY
                         opp_weighted.append((path_w * q * oq, child))
+                        if self._root_pass is not None and self._root_pass['mode'] == 'proof' and opp_states[-1] == 1:
+                            # 对方已有硬胜应手，本方该落子必败。
+                            self._mark_state_cut()
+                            break
                     score = self._weighted_average(opp_weighted)
                     # 对方最优应手决定硬胜败；局部机会/风险只取直接子/孙节点。
                     opp_layer = self._merge_fatal_states(opp_states)
@@ -681,6 +728,10 @@ class DeepSearch:
             cand_wins.append(cw)
             cand_losses.append(cl)
             cand_totals.append(c_total)
+            if self._root_pass is not None and self._root_pass['mode'] == 'proof' and branch_state == 1:
+                # 同方选择层有硬胜可结束，单个可避开的硬败不能提前结束。
+                self._mark_state_cut()
+                break
         val = self._weighted_average(weighted)
         node_state = self._merge_fatal_states(cand_states)
         # 此处是 player 主动选落点，不能再次当作对方应手层合并。
@@ -702,9 +753,61 @@ class DeepSearch:
             return (SIZE // 2, SIZE // 2)
         return (ranked[0]['r'], ranked[0]['c'])
 
-    def rank_candidates(self, board, points, player, trace=False):
+    def rank_candidates(self, board, points, player, trace=False, *, complete_scores=False):
+        """硬态筛选后补齐非硬败候选评分；全硬败时全部补齐兜底。
+
+        被淘汰且早停的硬败候选 score=None、score_complete=False；其余候选的
+        分、根五态和兼容统计保持完整搜索含义。网络/采样及 complete_scores
+        沿原完整路径。所有派生结果仅在本次固定棋盘、温度、历史中复用。
+        """
+        if complete_scores or self.use_nn or self.collect_samples:
+            return self._rank_candidates_pass(board, points, player, trace)
+        self.reset_leaf_eval_stats()
+        context = {'mode': 'full', 'proof': {}, 'complete': {}, 'leaves': {},
+                   'incomplete': set(), 'partial_roots': set(), 'stack': [],
+                   'root': None, 'memo_leaves': False, 't0': self.T0}
+        self._root_pass = context
+        try:
+            candidates = list(points) if isinstance(points, (dict, list)) else []
+            rows = []
+            has_nonlosing = False
+            for point in candidates:
+                point = tuple(point)
+                # 尚无非硬败替代时必须完整评分。全败局面因此沿原完整路径，
+                # 不先剪一遍再重算；已完成的早期硬败分也无需丢弃。
+                context['mode'] = 'proof' if has_nonlosing else 'full'
+                context['memo_leaves'] = has_nonlosing
+                needed = {point: points[point]} if isinstance(points, dict) else [point]
+                if trace and has_nonlosing:
+                    print('=== 状态筛选：中间累计分尚未补齐 ===')
+                current = self._rank_candidates_pass(board, needed, player, trace)
+                if not current:
+                    continue
+                row = current[0]
+                if point in context['partial_roots']:
+                    if row['state'] == self.STATE_LOSE:
+                        # 已有非硬败替代，此硬败不再用于选点；不展示部分累计分。
+                        row['score'] = None
+                        row['score_complete'] = False
+                    else:
+                        # 软态均补齐直接子/孙证据，且同档比较必须使用完整原始分。
+                        context['mode'] = 'full'
+                        if trace:
+                            print('=== 补齐参与比较的根候选评分 ===')
+                        row = self._rank_candidates_pass(board, needed, player, trace)[0]
+                rows.append(row)
+                has_nonlosing = has_nonlosing or row['state'] != self.STATE_LOSE
+                # 不同根前缀没有可复用的完整落子序列；派生缓存仅跨本根两阶段。
+                for name in ('proof', 'complete', 'leaves', 'incomplete', 'partial_roots'):
+                    context[name].clear()
+            rows.sort(key=lambda row: self._pick_key_state(row['state'], row['score']), reverse=True)
+            return rows
+        finally:
+            self._root_pass = None
+
+    def _rank_candidates_pass(self, board, points, player, trace=False):
         """对全部候选逐个深推，按五态优先、同档分支分降序返回完整列表
-        [{'r': r, 'c': c, 'score': val, ...}, ...]——全返回、不截断、分数直接暴露原始值。
+        [{'r': r, 'c': c, 'score': val, ...}, ...]；中间累计分由外层判定是否需要补齐。
         已占格跳过（不打分）；空候选返回 []。
         每条结果额外带新 5 态字段 state/state_name/child_state；
         排序规则：状态档位优先，同档按候选分降序。
@@ -719,20 +822,24 @@ class DeepSearch:
             cands = []
         if not cands:
             return []
+        context = self._root_pass
+        t0 = self.T0 if context is None else context['t0']
         if trace:
-            print('=== rank_candidates turn=%s T0=%g cands=%d ===' % ('W' if player == WHITE else 'B', self.T0, len(cands)))
-        cache = {}
+            print('=== rank_candidates turn=%s T0=%g cands=%d ===' % ('W' if player == WHITE else 'B', t0, len(cands)))
+        cache = (context['proof'] if context['mode'] == 'proof' else context['complete']) if context is not None else {}
         opp = 3 - player
         main_player = player
         results = []
         for (r, c) in cands:
+            if context is not None:
+                context['root'] = (r, c)
             if board[r][c] != EMPTY:
                 continue
             w = points.get((r, c), 60.0) if isinstance(points, dict) else 60.0
             root_cands = self._candidate_points(board, player, 5)
             cand_ws = [x[2] for x in root_cands]
             ctx = self._make_ctx(board, player, main_player, w, cand_ws,
-                                 cand_pts=root_cands, temp=self.T0, depth=0)
+                                 cand_pts=root_cands, temp=t0, depth=0)
             board[r][c] = player
             branch = [(r, c, player, w)]
             ctx_branch = [ctx]
@@ -777,7 +884,7 @@ class DeepSearch:
                     for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
-                        temp2 = self.T0 - self._dt(w) - self._dt(ow)
+                        temp2 = t0 - self._dt(w) - self._dt(ow)
                         ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
                                                cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         board[or_][oc] = opp
@@ -811,6 +918,9 @@ class DeepSearch:
                         ctx_branch.pop()
                         board[or_][oc] = EMPTY
                         opp_weighted.append((oq, child))
+                        if context is not None and context['mode'] == 'proof' and opp_states[-1] == 1:
+                            self._mark_state_cut()
+                            break
                     val = self._weighted_average(opp_weighted)
                     opp_layer = self._merge_fatal_states(opp_states)
                     if opp_layer == 1:

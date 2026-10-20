@@ -86,6 +86,28 @@ test('late exit from old process does not reject a new request', { skip: !availa
   assert.equal(h.timers.size, 0)
 })
 
+test('bridge preserves unscored losing candidates as null', { skip: !available }, async () => {
+  const h = harness()
+  const pending = h.api.computeAiMove({ moves: [] }, 1, 'partial-score')
+  h.respond(h.children[0], { ranked: [{ r: 7, c: 8, score: null, score_complete: false,
+    state: -1, state_name: '必败', child_state: 'none', forced: -1, fatal_ratio: 0 }] })
+  const result = await pending
+  assert.equal(result.ranked[0].score, null)
+  assert.equal(result.ranked[0].score_complete, false)
+  assert.equal(result.ranked[0].state, -1)
+})
+
+test('candidate display labels an unscored value instead of rounding null to zero', { skip: !available }, () => {
+  const source = fs.readFileSync(path.join(plugin, 'tools.js'), 'utf8')
+  const start = source.indexOf('const parts = ranked.map(')
+  const end = source.indexOf("lines.push('📋 全候选", start)
+  assert.ok(start > 0 && end > start)
+  const format = new Function('ranked', 'COLUMNS', source.slice(start, end) + '\nreturn parts')
+  const [display] = format([{ r: 7, c: 8, score: null, score_complete: false,
+    state_name: '必败', forced: -1 }], 'ABCDEFGHIJKLMNO')
+  assert.equal(display, 'I8 未补算 🔴必败')
+})
+
 test('single process fallback has same configuration and complete output', { skip: !available }, async () => {
   const h = harness()
   const result = h.api.computeAiMove({ moves: [] }, 1, 's')

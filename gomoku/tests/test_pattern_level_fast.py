@@ -219,7 +219,7 @@ class EvalEquivalenceTest(unittest.TestCase):
                  (5, 8, BLACK), (6, 7, WHITE)]
         fast = Engine()
         slow = Engine()
-        slow.search._eval = types.MethodType(reference_eval, slow.search)
+        slow.search._direction_level = types.MethodType(reference_direction_level, slow.search)
         board_fast, board_slow = empty_board(), empty_board()
         for (r, c, p) in moves:
             place(board_fast, r, c, p)
@@ -245,7 +245,7 @@ class RankingEquivalenceTest(unittest.TestCase):
     def _analyze(self, moves, player, use_reference):
         engine = Engine()
         if use_reference:
-            engine.search._eval = types.MethodType(reference_eval, engine.search)
+            engine.search._direction_level = types.MethodType(reference_direction_level, engine.search)
         board = empty_board()
         for (r, c, p) in moves:
             place(board, r, c, p)

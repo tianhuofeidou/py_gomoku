@@ -277,6 +277,12 @@ class Search:
         self.scope = SearchScope()            # 棋段区计算（增量更新的唯一范围来源）
         self.sb = [[17] * SIZE for _ in range(SIZE)]   # 黑状态表（none=17）
         self.sw = [[17] * SIZE for _ in range(SIZE)]   # 白状态表
+        # 每个空点的四方向档位，按 r*SIZE+c 索引；黑白缓存独立。
+        # 空盘均为档位 5。占点的旧档位不参与判定，撤销时由 journal 恢复。
+        self._direction_levels = {
+            BLACK: [[5] * len(DIRECTIONS) for _ in range(SIZE * SIZE)],
+            WHITE: [[5] * len(DIRECTIONS) for _ in range(SIZE * SIZE)],
+        }
         # 动态攻防配比状态：黑白各自独立，避免机机对战时互相污染
         self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
         # 历史 0 级事件用普通 list，窗口大小动态读 GEAR_ZERO_WINDOW（GA 可调）
@@ -288,10 +294,9 @@ class Search:
     def on_move(self, board, r, c, player, journal=None, record_history=True):
         """任意方落子后的状态更新（增量，不重扫全盘）。
 
-        只有一条规则：先清落子点自身，再用棋段区（段内缝 + 两端尾部全取）
-        刷新黑白两张表。不再有按落子方颜色分叉的"段1/段2/段3"，也不再有状态区：
-        棋段区把两端尾部取满之后，已经与全盘重算逐格一致（实测单步漂移 0、
-        24 局累计漂移 0），状态区只剩重复劳动。黑白两条路径由此完全同构。
+        清除落子点自身后，仍只刷新棋段区（段内缝 + 两端尾部全取）。
+        对区内每个空点，新落子只改变与它共线的一个方向；复用其余三方向
+        的档位，再合成同一套 18 子类。黑白双方使用相同的更新路径。
 
         journal：可选哈希表，记录本次更新中“首次被修改格子”的旧值，
                  用于深推模拟后的状态表回滚。
@@ -302,8 +307,7 @@ class Search:
         self._write_state(self.sb, r, c, 17, journal)
         self._write_state(self.sw, r, c, 17, journal)
         region = self.scope._both_segment_scope(board, r, c)
-        self._update(board, region, BLACK, self.sb, journal)
-        self._update(board, region, WHITE, self.sw, journal)
+        self._update(board, region, r, c, journal)
         # 每个真实棋步更新双方杀势及历史窗口，同一杀势持续存在只计一次。
         # 深推模拟不记录，避免假设棋步污染真实历史。
         if record_history:
@@ -322,38 +326,59 @@ class Search:
         state[r][c] = new_val
 
     def restore(self, journal):
-        """恢复 journal 中记录的所有格子旧值（深推模拟后回滚状态表）。"""
+        """成对恢复 18 子类表和方向缓存；journal 的键由表身份区分。"""
+        tables = {id(table): table for table in (
+            self.sb, self.sw,
+            self._direction_levels[BLACK], self._direction_levels[WHITE])}
         for (sid, r, c), old in journal.items():
-            if sid == id(self.sb):
-                self.sb[r][c] = old
-            else:
-                self.sw[r][c] = old
+            tables[sid][r][c] = old
 
-    def _update(self, board, region, player, state, journal=None):
-        """对区域内每个空位模拟落子 → 18 子类编号 → 写回状态表。
-        已占格一律置 17（none 无用）。"""
-        for (r, c) in region:
-            if not (0 <= r < SIZE and 0 <= c < SIZE):
-                continue
+    def _update(self, board, region, move_r, move_c, journal=None):
+        """棋段区只重算受本手影响的方向，其他方向沿用上次同步后的档位。"""
+        for r, c in region:
             if board[r][c] != EMPTY:
-                self._write_state(state, r, c, 17, journal)   # 已占格 → 无用
+                self._write_state(self.sb, r, c, 17, journal)
+                self._write_state(self.sw, r, c, 17, journal)
                 continue
-            self._write_state(state, r, c, self._eval(board, r, c, player), journal)
+            # 棋段区由落子点的四条线构成；除落点自身外，每点只共享一条线。
+            if r == move_r:
+                axis = 0
+            elif c == move_c:
+                axis = 1
+            elif r - move_r == c - move_c:
+                axis = 2
+            else:
+                axis = 3
+            dr, dc = DIRECTIONS[axis]
+            index = r * SIZE + c
+            for player, state in ((BLACK, self.sb), (WHITE, self.sw)):
+                board[r][c] = player
+                try:
+                    level = self._direction_level(board, r, c, player, dr, dc)
+                finally:
+                    board[r][c] = EMPTY
+                levels = self._direction_levels[player]
+                # 子类没变时方向档位也可能已变，仍须独立记录并回滚。
+                self._write_state(levels, index, axis, level, journal)
+                self._write_state(
+                    state, r, c, self._classify_levels(levels[index]), journal)
 
     # ---------- 单点评估（模拟落子 → 18 子类） ----------
 
     def rebuild_all(self, board):
-        """全盘重建黑白状态表 + 清杀势历史。
-        悔棋 / 换新对局后调用：Game 层回退只动 moves，引擎增量状态表
-        与棋盘失步（幽灵子残留干扰后续检测/漏杀），需全盘重算。"""
+        """全盘重建黑白子类表、四方向缓存，并清除真实对局的杀势历史。
+        悔棋或载入棋盘后不能复用旧方向；全量扫描也不读取方向缓存，
+        因此可以作为增量更新的独立对照。
+        """
         for r in range(SIZE):
             for c in range(SIZE):
-                if board[r][c] == EMPTY:
-                    self.sb[r][c] = self._eval(board, r, c, BLACK)
-                    self.sw[r][c] = self._eval(board, r, c, WHITE)
-                else:
-                    self.sb[r][c] = 17
-                    self.sw[r][c] = 17
+                index = r * SIZE + c
+                for player, state in ((BLACK, self.sb), (WHITE, self.sw)):
+                    levels = (self._point_levels(board, r, c, player)
+                              if board[r][c] == EMPTY else [5] * len(DIRECTIONS))
+                    self._direction_levels[player][index][:] = levels
+                    state[r][c] = (self._classify_levels(levels)
+                                   if board[r][c] == EMPTY else 17)
         self.zero_history = {BLACK: [], WHITE: []}
         self.zero_active = {BLACK: False, WHITE: False}
         self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
@@ -418,23 +443,21 @@ class Search:
                         best = lv
         return best
 
-    def _eval(self, board, r, c, player):
-        """模拟 player 在 (r,c) 落子 → 18 子类编号 0-17。
-        流程：
-          1. 临时落子 → 逐方向取档位（_direction_level，不再构造棋型记录）
-          2. _classify_levels 按 4 方向档位组合归类（必杀/威胁/潜力/无用）
-        评估后恢复棋盘（finally 清子）。
-
-        这是全引擎最热的函数（一次决策约 6 万次调用）。只取档位、不构造记录、
-        不算子类名/gap_sides：_subclass 内部用 list.index() 线性查找，而档位
-        根本不读这些字段。等价性由 gomoku/tests/test_pattern_level_fast.py 锁定。"""
+    def _point_levels(self, board, r, c, player):
+        """独立扫描一个空点的四方向档位，不读取或写入增量缓存。"""
         board[r][c] = player
         try:
-            direction_level = self._direction_level
-            return self._classify_levels(
-                [direction_level(board, r, c, player, dr, dc) for (dr, dc) in DIRECTIONS])
+            return [self._direction_level(board, r, c, player, dr, dc)
+                    for dr, dc in DIRECTIONS]
         finally:
             board[r][c] = EMPTY
+
+    def _eval(self, board, r, c, player):
+        """完整模拟 player 落子并合成 18 子类，返回前恢复棋盘。
+        战术检测等独立查询仍走四方向扫描，不读取增量缓存，避免把临时棋盘
+        与真实状态表混用；on_move 的热路径只重算受影响方向。
+        """
+        return self._classify_levels(self._point_levels(board, r, c, player))
 
     @staticmethod
     def _classify_levels(levels):

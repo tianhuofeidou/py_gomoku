@@ -5,7 +5,7 @@
   - 黑第一手 → 天元 (7,7)
   - 白第二手 → 开局候选列表第一个
   - 其余 → analyze_turn 深推选点
-返回 ((row, col), ranked, net_used)。ranked 供界面展示全候选（按分降序）。
+返回 ((row, col), ranked, net_used)。ranked 供界面按五态和完整分展示全候选；未补算的已淘汰硬败分为 None。
 """
 import json
 import os

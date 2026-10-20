@@ -117,7 +117,7 @@ class Engine:
                 stats[parent].append((r, c, SUBCLASS_NAMES[state[r][c]]))
         return stats
 
-    def analyze_turn(self, board, player):
+    def analyze_turn(self, board, player, *, complete_scores=False):
         """轮到 player 时的完整分析，输出 4 部分（agent 决策界面）：
         1. part1_opp_threat：对方视角威胁分布（0必杀/1威胁/2潜力/3无用，各含点位+子类名）
         2. part2_my_threat ：己方视角威胁分布（同上）
@@ -130,7 +130,7 @@ class Engine:
                         defense 为 {(r,c): 权重} 字典（权重供温度分配/排序用）
         4. part4_result：{'type': 'direct'|'searched', 'move': (r,c), 'ranked': [...]}
              direct（唯一候选）→ 不深推，ranked 给超大分 1e9；
-             searched（候选 ≥2）→ 全部候选逐个深推打分，ranked 全返回。
+             searched（候选 ≥2）→ ranked 全返回；已淘汰硬败可 score=None，其他分完整。
         """
         self.decision_net_used = False
         # 直取分支不会进入 rank_candidates，也要清掉上一手的叶子统计。
@@ -194,7 +194,10 @@ class Engine:
                     'ranked': [self.deep_search._candidate_result(r0, c0, 1e9)],
                 }
             else:
-                ranked = self.deep_search.rank_candidates(board, pts, player)
+                if complete_scores or self.use_decision_net:
+                    ranked = self.deep_search.rank_candidates(board, pts, player, complete_scores=True)
+                else:
+                    ranked = self.deep_search.rank_candidates(board, pts, player)
                 best = ranked[0] if ranked else None
                 result['part4_result'] = {
                     'type': 'searched',
