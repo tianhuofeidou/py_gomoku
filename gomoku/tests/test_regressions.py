@@ -283,13 +283,25 @@ class RegressionTest(unittest.TestCase):
 
     def test_opening_is_identical_in_both_adapters(self):
         moves = [{'r': 7, 'c': 7, 'player': 1}, {'r': 6, 'c': 6, 'player': 2}]
-        result = server.handle({'type': 'move', 'session': 'opening', 'moves': moves, 'player': 1})
         root = Path(__file__).resolve().parents[2]
-        out = subprocess.run([sys.executable, '-m', 'gomoku.adapter.ai_move'],
-                             input=json.dumps({'moves': moves, 'player': 1}), text=True,
-                             capture_output=True, cwd=root, timeout=15, check=True)
-        once = json.loads(out.stdout)
-        self.assertEqual(once, {k: result[k] for k in ('row', 'col', 'ranked', 'net_used')})
+        for symmetry in range(8):
+            with self.subTest(symmetry=symmetry):
+                # 两个独立进程各自会抽签；比较入口一致性时固定同一方向，保留完整输出断言。
+                with patch('gomoku.core.engine.SystemRandom') as source:
+                    source.return_value.randrange.return_value = symmetry
+                    result = server.handle({'type': 'move', 'session': f'opening-{symmetry}',
+                                            'moves': moves, 'player': 1})
+                child = (
+                    'from unittest.mock import patch\n'
+                    'from gomoku.adapter.ai_move import main\n'
+                    "with patch('gomoku.core.engine.SystemRandom') as source:\n"
+                    f'    source.return_value.randrange.return_value = {symmetry}\n'
+                    '    main()\n')
+                out = subprocess.run([sys.executable, '-B', '-c', child],
+                                     input=json.dumps({'moves': moves, 'player': 1}), text=True,
+                                     capture_output=True, cwd=root, timeout=15, check=True)
+                once = json.loads(out.stdout)
+                self.assertEqual(once, {k: result[k] for k in ('row', 'col', 'ranked', 'net_used')})
 
     def test_network_flag_and_model_path(self):
         e = Engine(use_decision_net=True)

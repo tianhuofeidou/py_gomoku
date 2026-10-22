@@ -26,7 +26,7 @@ import sys
 from gomoku import service
 from gomoku.core.utils import BLACK, WHITE, SIZE, empty_board, place
 
-ABOUT = 'name="QifengXiaojing", version="1.7.1", author="tianhuofeidou", country="CHN"'
+ABOUT = 'name="QifengXiaojing", version="1.8.0", author="tianhuofeidou", country="CHN"'
 SUPPORTED_SIZES = (SIZE,)
 
 
@@ -168,7 +168,11 @@ class Brain(object):
         对方多一子则本方白。按颜色交替重建以保持内核轮次一致；每种颜色内部保留
         输入顺序。有序输入不变，乱序输入不能恢复真实历史，只能重建等价盘面。
         """
+        # BOARD 是盘面重建，同局重复发送不能改变开局方向；START/RESTART 才重抽。
+        orientation = self.engine._opening_symmetry if self.engine is not None else None
         self.reset()
+        if orientation is not None:
+            self.engine._opening_symmetry = orientation
         raw = []
         invalid = False
         while True:

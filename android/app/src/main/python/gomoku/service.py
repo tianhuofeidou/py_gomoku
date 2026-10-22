@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """引擎服务：封装核心引擎，对外提供规范化 AI 落子。
 
-与插件 adapter/server.py 的 compute_move 保持一致：
-  - 黑第一手 → 天元 (7,7)
-  - 白第二手 → 开局候选列表第一个
-  - 其余 → analyze_turn 深推选点
+所有入口统一委托 Engine.analyze_turn：
+  - 本方前三手 → 棋谱/谱外开局规则；
+  - 后续 → 谱点参与根候选，按原温度银行与五态排序选点。
 返回 ((row, col), ranked, net_used)。ranked 供界面按五态和完整分展示全候选；未补算的已淘汰硬败分为 None。
 """
 import json
@@ -17,6 +16,18 @@ from gomoku.tools import ga_tune as G
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _engine = None
+
+# Engine.opening_source 的玩家可读说明。图形界面与命令行共用一份，避免两端文案漂移。
+DECISION_SOURCE_LABELS = {
+    'book': '棋谱开局',
+    'rules': '谱外开局规则',
+    'candidate': '棋谱候选＋纯算法',
+}
+
+
+def decision_source_label(source):
+    """把 Engine.opening_source 翻成界面文案；未设置或未知来源时回退纯算法。"""
+    return DECISION_SOURCE_LABELS.get(source, '纯算法')
 
 
 def load_ga_params():
@@ -58,44 +69,14 @@ def ai_move(board, moves, player, engine=None):
     if engine is None:
         engine = get_engine()
         engine.reset(moves)
-    # 开局特例不会进入 Engine.analyze_turn，仍需清空上一手的显示统计。
+    # 清空上一手的显示统计；核心会按本次开局/深推的实际路径重新记录。
     engine.deep_search.reset_leaf_eval_stats()
     if player not in (BLACK, WHITE):
         raise ValueError('bad player')
     if not any(EMPTY in row for row in board):
         return None, [], False
 
-    # 黑第一手：天元
-    if player == BLACK and len(moves) == 0:
-        return (7, 7), [], False
-
-    # 白第二手：开局候选列表取第一个
-    if player == WHITE and len(moves) == 1:
-        cand = engine.compute_move(board)
-        if isinstance(cand, list) and cand:
-            return (cand[0][0], cand[0][1]), [], False
-
-    # 黑第二手（人类执白时 AI 的第二手，moves=[黑天元, 白1]）：
-    # 贴白子开局（白 8 邻域空点中取离天元最近者），不深推——
-    # 空旷 2 子局面深推候选质量差会乱走（与白第二手对称的开局特例）。
-    if player == BLACK and len(moves) == 2:
-        wr, wc = moves[-1]['r'], moves[-1]['c']
-        best = None
-        best_d = 99
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                if dr == 0 and dc == 0:
-                    continue
-                rr, cc = wr + dr, wc + dc
-                if not (0 <= rr < SIZE and 0 <= cc < SIZE) or board[rr][cc] != EMPTY:
-                    continue
-                d = max(abs(rr - 7), abs(cc - 7))   # 距天元（切比雪夫）
-                if d < best_d:
-                    best_d = d
-                    best = (rr, cc)
-        if best:
-            return (best[0], best[1]), [], False
-
+    # 开局、谱点候选和正式搜索统一由核心编排，所有适配入口同源。
     res = engine.analyze_turn(board, player)
     mv = res['part4_result']['move']
     ranked = res['part4_result'].get('ranked') or []

@@ -25,7 +25,7 @@ from gomoku.session import PlaySession
 from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.7.1'
+APP_TITLE = '棋逢小鲸 v1.8.0'
 
 
 def _resource_path(relative_path):
@@ -259,9 +259,15 @@ class GomokuApp:
         self._run_ai(lambda: self._ai_calc(game.current_player()))
 
     def _pvp_assist(self):
-        """人人对战中按需分析当前行棋方，只展示建议，不代替玩家落子。"""
+        """按需分析当前行棋方，只展示建议，不代替玩家落子。
+
+        人人对战里双方都能点；人机对战里只在自己回合提供——AI 回合分析等于替 AI
+        想棋，对玩家没有意义，所以按钮在这时是灰的。
+        """
         game = self.session.game
-        if self.ai_thinking or game.mode != 'pvp' or game.winner is not None:
+        if self.ai_thinking or game.winner is not None or game.mode not in ('pvp', 'ai'):
+            return
+        if game.mode == 'ai' and not game.is_human_turn():
             return
         player = game.current_player()
         self.analysis_hints = []
@@ -296,7 +302,9 @@ class GomokuApp:
     def _analysis_calc(self, player):
         """AI 辅助分析（在子线程执行），返回候选但不向棋局落子。"""
         game = self.session.game
-        if game.winner is not None or game.mode != 'pvp' or player != game.current_player():
+        # 线程内再校验一次：分析期间棋局可能已经变化。
+        if (game.winner is not None or game.mode not in ('pvp', 'ai')
+                or player != game.current_player()):
             return None
         t0 = time.perf_counter()
         out = self.session.analyze(player)
@@ -310,6 +318,9 @@ class GomokuApp:
     def _fmt_score(s):
         """未补算与数值分分开显示；1e9 为直取，其余保留整数。"""
         return '未补算' if s is None else ('直取' if s > 1e8 else ('%.0f' % s))
+
+    def _decision_source_text(self):
+        return service.decision_source_label(self.session.engine.opening_source)
 
     def _ai_apply(self, calc):
         """AI 计算结果上屏（主线程）：落子标记 + 结构化候选打分。"""
@@ -326,15 +337,20 @@ class GomokuApp:
             leaf_text = '纯算法（%d 个叶子）' % total
             leaf_tag = ' [纯算法 %d]' % total
         self.leaf_eval_var.set('叶子评估：' + leaf_text)
-        self.decision_eval_var.set('决策选点：纯算法')
+        self.decision_eval_var.set('决策选点：' + self._decision_source_text())
         tag = leaf_tag
         self._log('【%s】AI 思考 %.1fs → 落子 %s%d%s' % (who, dt, COLUMNS[c], r + 1, tag))
         self._show_ranked(ranked, (r, c), '选中')
 
     def _analysis_apply(self, calc):
-        """把人人对战的辅助分析结果写入界面，不改变最后落子标记。"""
+        """把辅助分析结果写入界面，不改变最后落子标记（人人、人机共用）。"""
         player, move, ranked, net_used, leaf_status, dt = calc
-        who = '黑' if player == BLACK else '白'
+        game = self.session.game
+        # 人机对局里"黑/白"对玩家没有意义，统一按你我称呼，与落子日志保持一致。
+        if game.mode == 'ai':
+            who = '你' if player == game.human_player_() else 'AI'
+        else:
+            who = '黑' if player == BLACK else '白'
         mode = leaf_status.get('mode')
         total = leaf_status.get('total', 0)
         if mode == 'not_triggered':
@@ -344,7 +360,7 @@ class GomokuApp:
             leaf_text = '纯算法（%d 个叶子）' % total
             leaf_tag = ' [纯算法 %d]' % total
         self.leaf_eval_var.set('叶子评估：' + leaf_text)
-        self.decision_eval_var.set('辅助决策：纯算法')
+        self.decision_eval_var.set('辅助决策：' + self._decision_source_text())
         if move is None:
             self._log('【%s】AI辅助分析 %.1fs · 没有合法候选%s' % (who, dt, leaf_tag))
             return
@@ -522,7 +538,9 @@ class GomokuApp:
     def _refresh(self):
         g = self.session.game
         self._draw_board(g.board())
-        self.assist_button['state'] = (tk.NORMAL if g.mode == 'pvp' and not self.ai_thinking
+        # 人人对战双方都能分析；人机对战只在轮到人类时可用（AI 回合分析无意义）。
+        can_assist = g.mode == 'pvp' or (g.mode == 'ai' and g.is_human_turn())
+        self.assist_button['state'] = (tk.NORMAL if can_assist and not self.ai_thinking
                                        and g.winner is None else tk.DISABLED)
         if g.winner is not None:
             self.turn_label['text'] = self._end_text() + '（点「新对局」重来）'

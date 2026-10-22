@@ -108,6 +108,11 @@ class RootScoreProtectionTest(unittest.TestCase):
     def test_decision_network_requests_complete_scores(self):
         engine = Engine(use_decision_net=True)
         board = empty_board()
+        # 本方前三手现在由开局模块接管；完整评分契约在第四手及之后验证。
+        for r, c, player in ((0, 0, BLACK), (14, 14, WHITE), (1, 2, BLACK),
+                             (13, 11, WHITE), (2, 4, BLACK), (12, 9, WHITE)):
+            board[r][c] = player
+            engine.on_move(board, r, c, player)
         row = engine.deep_search._candidate_result(7, 7, 1.)
         with patch.object(engine.search, 'tactical_candidates', return_value=('', {})), \
                 patch.object(engine.search, '_fallback', return_value=[(7, 7, 80.), (7, 9, 70.)]), \

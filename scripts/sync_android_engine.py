@@ -45,6 +45,8 @@ CORE_FILES = (
     'pattern.py',
     'search.py',
     'deep_search.py',
+    'opening_book.py',
+    'opening_book_data.py',
     'engine.py',
     'train.py',
 )

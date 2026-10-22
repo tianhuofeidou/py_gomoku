@@ -21,6 +21,7 @@ class PlaySession:
         self.game.history = history
         self.game.register(self.sid)
         self.engine.reset()
+        self.engine._reset_opening_orientation()  # 新对局重抽方向；悔棋重建不重抽。
 
     def place(self, r, c, player):
         res = self.game.place(r, c, player)
@@ -55,16 +56,6 @@ class PlaySession:
         if player != game.current_player():
             return None
         board = game.board()
-        # 空盘没有棋型可供 fallback 评分，沿用引擎正式开局策略推荐天元，
-        # 给出归一化展示分；从第二手起进入完整 analyze_turn 深推并返回多候选。
-        if not game.moves:
-            self.engine.deep_search.reset_leaf_eval_stats()
-            self.engine.decision_net_used = False
-            opening = self.engine.compute_move(board, player)
-            if isinstance(opening, list) and opening:
-                r, c = opening[0]
-                ranked = [self.engine.deep_search._candidate_result(r, c, 100.0)]
-                return (r, c), ranked, False
         result = self.engine.analyze_turn(board, player)
         part4 = result['part4_result']
         move = part4.get('move')

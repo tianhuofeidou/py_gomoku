@@ -11,6 +11,7 @@
 import io
 import sys
 import unittest
+from unittest.mock import patch
 
 from gomoku.core.utils import BLACK, WHITE, SIZE, empty_board, place
 from gomoku.protocol import Brain, run
@@ -82,6 +83,18 @@ class HandshakeTest(unittest.TestCase):
         self.assertEqual(self.brain.board[6][6], BLACK)
         self.assertIsNotNone(reply)
         self.assertFalse(reply.startswith('ERROR'), reply)
+
+    def test_board_rebuild_preserves_opening_orientation_until_restart(self):
+        with patch('gomoku.core.engine.SystemRandom') as random_source:
+            random_source.return_value.randrange.side_effect = [0, 1, 2, 3]
+            self.brain.handle('START 15')
+            first = self.brain.read_board(io.StringIO('7,7,2\nDONE\n'))
+            self.assertEqual(self.brain.engine._opening_symmetry, 0)
+            repeated = self.brain.read_board(io.StringIO('7,7,2\nDONE\n'))
+            self.assertEqual(repeated, first)
+            self.assertEqual(self.brain.engine._opening_symmetry, 0)
+            self.brain.handle('RESTART')
+            self.assertEqual(self.brain.engine._opening_symmetry, 3)
 
     def test_run_loop_terminates_on_end(self):
         stream = io.StringIO('START %d\nINFO timeout_turn 1000\nABOUT\nEND\n' % SIZE)
