@@ -62,8 +62,8 @@ class CliDisplayTest(unittest.TestCase):
         self.assertIn('叶子：', out)
         self.assertIn('候选', out)
         self.assertNotIn('[纯算法]', out, '不得再用硬编码的[纯算法]冒充决策来源')
-        self.assertIn(s.engine.opening_source, ('book', 'rules'),
-                      '本方前三手应由开局模块接管')
+        self.assertEqual(s.engine.opening_source, 'book',
+                         '天元黑一后的相邻白二应命中可靠推荐')
         self.assertIn(service.decision_source_label(s.engine.opening_source), out)
 
 

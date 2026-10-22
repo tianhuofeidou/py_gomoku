@@ -26,7 +26,7 @@ import sys
 from gomoku import service
 from gomoku.core.utils import BLACK, WHITE, SIZE, empty_board, place
 
-ABOUT = 'name="QifengXiaojing", version="1.8.0", author="tianhuofeidou", country="CHN"'
+ABOUT = 'name="QifengXiaojing", version="1.9.0", author="tianhuofeidou", country="CHN"'
 SUPPORTED_SIZES = (SIZE,)
 
 

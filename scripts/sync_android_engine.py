@@ -30,6 +30,7 @@ for _stream in (sys.stdout, sys.stderr):
 TOP_FILES = (
     '__init__.py',
     'game.py',
+    'loss_book.py',      # game._archive_finished 会 import 它，漏了会在 Android 上 ImportError
     'memory.py',
     'paths.py',
     'service.py',
@@ -97,6 +98,63 @@ def _normalize_newlines(data):
     return data.replace(b'\r\n', b'\n')
 
 
+def _module_level_internal_imports(py_path):
+    """提取文件内**所有层级**对 gomoku 内部模块的 import，返回清单相对路径集合。
+
+    为什么连函数体内的延迟 import 也要查：``game._archive_finished`` 里用
+    ``from gomoku import loss_book`` 是延迟 import，同步漏了它虽然被 try/except
+    兜住（不会崩），但 Android 端会**静默失去收录能力**——这正是要防的缺口。
+    ``gomoku.tools.*`` 不在 Android 同步范围（只有 ga_tune 占位），单独排除。
+    """
+    import re
+    try:
+        text = py_path.read_text(encoding='utf-8')
+    except Exception:
+        return set()
+    out = set()
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith('from gomoku'):
+            continue
+        m = re.match(r'from\s+gomoku\.(\w+)(?:\.(\w+))?\s+import\b', s)
+        if m:
+            pkg, mod = m.group(1), m.group(2)
+            # tools 与 nn 都不在 Android 同步范围：
+            #   tools/ 只有 ga_tune 占位；nn/ 是本地实验代码（被 .gitignore 排除）
+            if pkg in ('tools', 'nn'):
+                continue
+            if mod:
+                out.add('%s/%s.py' % (pkg, mod))
+            continue
+        m = re.match(r'from\s+gomoku\s+import\s+(.+)$', s)
+        if m:
+            for name in m.group(1).split('#')[0].split(','):
+                name = name.strip().split(' as ')[0].strip()
+                if name.isidentifier():
+                    out.add(name + '.py')
+    return out
+
+
+def check_import_closure(src, expected):
+    """检查"清单内的文件在模块级 import 了清单外的内部模块"。
+
+    这类缺口会让同步"通过"但 Android 端 ImportError——
+    game.py 引用 loss_book.py 就是这么漏出去的。
+    """
+    known = {str(p).replace('\\', '/') for p in expected}
+    problems = []
+    for rel in sorted(known):
+        if not rel.endswith('.py'):
+            continue
+        path = src / rel
+        if not path.is_file():
+            continue
+        for dep in sorted(_module_level_internal_imports(path)):
+            if dep not in known:
+                problems.append('%s 模块级 import 了清单外的 %s' % (rel, dep))
+    return problems
+
+
 def check(root):
     """返回 (errors, warnings)。errors 非空表示同步漂移。"""
     src = root / 'gomoku'
@@ -109,6 +167,7 @@ def check(root):
         return [f'Android 引擎目录不存在: {dst}'], []
 
     expected = expected_files(root)
+    errors.extend(check_import_closure(src, expected))
     for rel, want in expected.items():
         target = dst / rel
         if not target.is_file():

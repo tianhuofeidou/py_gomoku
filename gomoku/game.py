@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """对局状态机与持久化（独立版，复刻插件的 state.js）。
 
 负责棋局对象生命周期、落子/胜负/悔棋/提议协议、磁盘存档。
@@ -159,6 +159,11 @@ class Game:
             if entry['moves'] == self.moves and entry['winner'] == self.winner:
                 from gomoku import memory
                 memory.rollback_result(entry.get('memoryReceipt'), entry)
+                # 撤销败局库收录：只删这一条来源，同棋谱的其它失败记录不受影响。
+                src_id = entry.get('lossBookSourceId')
+                if src_id:
+                    from gomoku import loss_book
+                    loss_book.remove_source(src_id)
                 self.history.pop()
         self.archived = False
         self.solidified = False
@@ -272,6 +277,24 @@ class Game:
             receipt = memory.record_result(self)
         except Exception:
             pass
+        # 败局回归库：AI 失败时自动收录，记录来源 id 供悔棋撤销。
+        # 失败必须可见——不能把收录异常咽掉。
+        loss_book_source = None
+        loss_book_error = None
+        try:
+            from gomoku import loss_book
+            if self.mode == 'ai' and self.winner in (BLACK, WHITE) \
+                    and self.winner == self.human_player_():
+                case, _is_new = loss_book.add_case(
+                    self.moves, self.ai_player(), winner=self.winner,
+                    kind=loss_book.KIND_LOSS, source='live',
+                    source_detail='sid=%s engine=%s' % (getattr(self, 'sid', '?'), self.engine),
+                    started_at=self.started_at,
+                    config={'mode': self.mode, 'aiMode': self.ai_mode},
+                )
+                loss_book_source = case['sources'][-1]['id']
+        except Exception as e:
+            loss_book_error = '%s: %s' % (type(e).__name__, e)
         self.history.append({
             'moves': [dict(m) for m in self.moves],
             'winner': self.winner,
@@ -281,6 +304,8 @@ class Game:
             'startedAt': self.started_at,
             'endedAt': int(time.time() * 1000),
             'memoryReceipt': receipt,
+            'lossBookSourceId': loss_book_source,
+            'lossBookError': loss_book_error,
         })
         self._solidify()
         self.persist()

@@ -12,7 +12,7 @@ from gomoku.tests.test_opening_book import record, setup_position
 
 
 class OpeningBookGuiTest(unittest.TestCase):
-    def test_analysis_displays_book_rules_and_searched_candidates(self):
+    def test_analysis_displays_book_off_book_algorithm_and_searched_candidates(self):
         try:
             import tkinter as tk
         except ImportError:
@@ -38,7 +38,7 @@ class OpeningBookGuiTest(unittest.TestCase):
 
                 app.session.engine.opening_book = OpeningBook(())
                 app._analysis_apply(app._analysis_calc(1))
-                self.assertEqual(app.decision_eval_var.get(), '辅助决策：谱外开局规则')
+                self.assertEqual(app.decision_eval_var.get(), '辅助决策：纯算法')
                 self.assertIn('未触发', app.leaf_eval_var.get())
 
                 engine, board, moves = setup_position(6)

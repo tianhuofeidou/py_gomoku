@@ -25,7 +25,7 @@ from .utils import SIZE, EMPTY, BLACK, WHITE
 from .pattern import PatternAnalyzer
 from .search import Search, SUBCLASS_NAMES, SUBCLASS_PARENT
 from .deep_search import DeepSearch
-from .opening_book import OpeningBook, _opening_move
+from .opening_book import OpeningBook, _opening_move, opening_fallback
 
 
 class Engine:
@@ -39,7 +39,7 @@ class Engine:
         self.search = Search(self.pattern)        # 状态表 + 候选 + 评分兜底
         self.opening_book = OpeningBook()
         self._reset_opening_orientation()
-        self.opening_source = None  # 本次决策来自棋谱、谱外规则或棋谱候选。
+        self.opening_source = None  # 本次决策来自可靠谱着、后续谱候选或原算法。
         self.deep_search = DeepSearch(self.search)  # 温度银行深推
         # 决策网络（可选）：None 或加载失败 → 纯算法回退
         self.decision_net = decision_net
@@ -91,7 +91,7 @@ class Engine:
         """本方前三次落子由开局模块接管；计数取盘面，不依赖协议着法顺序。
 
         compute_move 保留开局返回列表的既有接口。成五/堵五交回正式战术直取，
-        其余优先完整局面棋谱；出谱使用独立开局规则，不进入温度银行。
+        其余命中可靠完整局面棋谱才接管；出谱立即交回原候选与温度银行。
         """
         if sum(row.count(player) for row in board) >= 3:
             return None
@@ -124,7 +124,7 @@ class Engine:
         """轮到 player 时的完整分析，输出 4 部分（agent 决策界面）：
         1. part1_opp_threat：对方视角威胁分布（0必杀/1威胁/2潜力/3无用，各含点位+子类名）
         2. part2_my_threat ：己方视角威胁分布（同上）
-        本方前三手先走棋谱/谱外开局规则（成五/堵五优先），未展开不提供硬状态。
+        本方前三手命中可靠棋谱才直取（成五/堵五优先），出谱走原算法。
         从本方第四手起，谱点仅补入普通根候选；所有谱点保留原评分与五态语义。
         3. part3_candidates：初始候选点，按检测优先级【命中即止】取第一个命中的类型：
              my-five→direct(落子即胜)   / opp-five→direct(直接堵)
@@ -188,6 +188,13 @@ class Engine:
                     mode = 'dual' if self.search._dual_score(board, rr, cc) > 0 else 'attack'
                     score = self.search._candidate_score(board, rr, cc, player, mode)
                     pts[book_move] = min(max(float(score) + mem_bonus.get(book_move, 0.0), 1.0), 100.0)
+            if not pts:
+                # 谱外仅一子等稀疏局面可能没有潜力/威胁候选；只在空池时补合法点。
+                # 复用已有几何工具，不再让它绕过正常多候选搜索或产生开局标签。
+                legal = opening_fallback(board, player)
+                if legal is not None:
+                    score = self.search._candidate_score(board, *legal, player, 'attack')
+                    pts[legal] = min(max(float(score), 1.0), 100.0)
             cand = {'type': 'fallback', 'reason': 'none', 'points': pts}
         result['part3_candidates'] = cand
         # 4. 深度推演结果

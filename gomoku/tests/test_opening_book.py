@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """按本方落子次数接管开局，随后谱点只参与根候选的回归。"""
 import copy
+import json
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -8,7 +10,7 @@ from gomoku import service
 from gomoku.core.engine import Engine
 from gomoku.core.opening_book import (OpeningBook, canonical_position, transform_point,
                                       inverse_point, opening_fallback)
-from gomoku.core.opening_book_data import RECORDS, PROVENANCE
+from gomoku.core.opening_book_data import RECORDS, ALTERNATIVES, CANDIDATES, PROVENANCE
 from gomoku.core.utils import BLACK, WHITE, empty_board
 from gomoku.session import PlaySession
 
@@ -121,18 +123,74 @@ class OpeningBookTest(unittest.TestCase):
                                           engine.search._direction_levels, engine.moves), before)
                 self.assertEqual(set(actual), allowed)
 
-    def test_packaged_white_first_move_varies_in_four_equal_directions(self):
+    def test_packaged_white_first_move_uses_both_adjacent_families(self):
         engine, board, _moves = setup_position(1)
         moves = []
         for symmetry in range(8):
             engine._opening_symmetry = symmetry
             moves.append(engine.analyze_turn(board, WHITE)['part4_result']['move'])
-        expected = {(5, 7), (9, 7), (7, 5), (7, 9)}
+        expected = {(r, c) for r in range(6, 9) for c in range(6, 9) if (r, c) != (7, 7)}
         self.assertEqual(set(moves), expected)
         for move in expected:
-            self.assertEqual(moves.count(move), 2, '八个等概率方向不能因镜像重复而偏向某个落点')
+            self.assertEqual(moves.count(move), 1, '正邻、斜邻各四个方向，八种视角各选一个')
 
-    def test_random_orientation_keeps_rules_and_tactical_weights(self):
+    def test_all_human_shapes_have_the_curated_white_four_reply(self):
+        seed_path = Path(__file__).resolve().parents[1] / 'data/human_opening_seeds.json'
+        seeds = json.loads(seed_path.read_text(encoding='utf-8'))['openings']
+        self.assertEqual({row['opening'] for row in seeds},
+                         {f'{kind}{n}' for kind in ('D', 'I') for n in range(1, 14)})
+        book = OpeningBook()
+        manifest = json.loads((seed_path.parent / 'classical_opening_recommendations.json').read_text(encoding='utf-8'))
+        expected = {tuple(map(tuple, row['history'])): tuple(row['move'])
+                    for row in manifest['recommendations'] if len(row['history']) == 3}
+        keys = set()
+        for seed in seeds:
+            board = empty_board()
+            for index, (r, c) in enumerate(seed['history']):
+                self.assertEqual(board[r][c], 0)
+                board[r][c] = BLACK if index % 2 == 0 else WHITE
+            keys.add(canonical_position(board, WHITE)[0])
+            # 不再强求每条主线都有黑五、白六：无可靠人类依据时必须提前出谱。
+            for player in (WHITE,):
+                move = book.lookup(board, player)
+                self.assertIsNotNone(move, (seed['opening'], player))
+                expected_book = OpeningBook([record(board, player, expected[tuple(map(tuple, seed['history']))])])
+                self.assertEqual(move, expected_book.lookup(board, player))
+                self.assertEqual(board[move[0]][move[1]], 0)
+                for symmetry in range(8):
+                    changed = empty_board()
+                    for r in range(15):
+                        for c in range(15):
+                            rr, cc = transform_point(r, c, symmetry)
+                            changed[rr][cc] = board[r][c]
+                    actual = book.lookup(changed, player)
+                    self.assertIsNotNone(actual, (seed['opening'], symmetry))
+                    self.assertEqual(changed[actual[0]][actual[1]], 0)
+                board[move[0]][move[1]] = player
+        self.assertEqual(len(keys), 26)
+
+    def test_alternative_records_are_legal_and_do_not_change_lookup_return_type(self):
+        self.assertEqual(len(ALTERNATIVES), PROVENANCE['alternative_moves'])
+        book = OpeningBook()
+        for player, black, white, r, c in ALTERNATIVES:
+            board = empty_board()
+            for color, cells in ((BLACK, black), (WHITE, white)):
+                for cell in cells:
+                    board[cell // 15][cell % 15] = color
+            choices = book._lookup_choices(board, player)
+            self.assertEqual(len(choices), 2)
+            self.assertEqual(choices[1], (r, c))
+            self.assertNotEqual(choices[0], choices[1])
+            self.assertEqual(book.lookup(board, player), choices[0])
+            self.assertEqual(board[r][c], 0)
+
+    def test_alternative_requires_distinct_legal_move_and_matching_primary(self):
+        primary = (BLACK, (), (), 7, 7)
+        for alternate in (primary, (WHITE, (112,), (), 6, 7), (BLACK, (), (), 15, 0)):
+            with self.subTest(alternate=alternate), self.assertRaises(ValueError):
+                OpeningBook([primary], alternatives=[alternate])
+
+    def test_out_of_book_orientation_preserves_tactical_weights_and_uses_search(self):
         for player in (BLACK, WHITE):
             engine = Engine()
             engine.opening_book = OpeningBook(())
@@ -142,18 +200,53 @@ class OpeningBookTest(unittest.TestCase):
             tactical = {(5, 7): 100.0, (9, 7): 80.0}
             for symmetry in range(8):
                 engine._opening_symmetry = symmetry
-                with patch.object(engine.search, 'tactical_candidates', return_value=('opp-vcf', tactical)):
+                ranked = [engine.deep_search._candidate_result(5, 7, 100)]
+                with patch.object(engine.search, 'tactical_candidates', return_value=('opp-vcf', tactical)), \
+                     patch.object(engine.deep_search, 'rank_candidates', return_value=ranked) as rank:
                     result = engine.analyze_turn(board, player)
                 self.assertEqual(result['part4_result']['move'], (5, 7))
-                self.assertEqual(engine.opening_source, 'rules')
+                self.assertEqual(rank.call_args.args[1], tactical)
+                self.assertIsNone(engine.opening_source)
                 self.assertEqual(tactical, {(5, 7): 100.0, (9, 7): 80.0})
-        engine, board, _moves = setup_position(1)
-        engine.opening_book = OpeningBook(())
-        moves = set()
-        for symmetry in range(8):
-            engine._opening_symmetry = symmetry
-            moves.add(engine.analyze_turn(board, WHITE)['part4_result']['move'])
-        self.assertEqual(moves, {opening_fallback(board, WHITE)})
+
+    def test_packaged_study_lines_only_supply_searched_candidates(self):
+        self.assertEqual(len(CANDIDATES), PROVENANCE['candidate_positions'])
+        book = OpeningBook()
+        for player, black, white, r, c in CANDIDATES:
+            self.assertGreaterEqual(len(black) + len(white), 6)
+            self.assertEqual(len(black), len(white) + (player == WHITE))
+            board = empty_board()
+            for color, cells in ((BLACK, black), (WHITE, white)):
+                for cell in cells:
+                    board[cell // 15][cell % 15] = color
+            self.assertEqual(book._lookup_choices(board, player), (), '未评级研究线不能冒充可靠推荐')
+            self.assertEqual(book.lookup(board, player), (r, c))
+            self.assertEqual(board[r][c], 0)
+
+    def test_classical_six_move_line_and_early_book_exit(self):
+        book = OpeningBook()
+        board = empty_board()
+        for i, point in enumerate(((7, 7), (6, 7), (5, 9), (6, 8), (6, 6))):
+            board[point[0]][point[1]] = i % 2 + 1
+        self.assertEqual(book.lookup(board, WHITE), (8, 8), '疏星老定式白六 I7')
+        board[6][6] = 0
+        board[14][14] = BLACK
+        self.assertIsNone(book.lookup(board, WHITE), '未查明应手的白六不得继续沿旧谱或研究线直取')
+
+    def test_study_candidate_enters_original_root_search_for_both_colors(self):
+        for player, count in ((BLACK, 6), (WHITE, 7)):
+            engine, board, _moves = setup_position(count)
+            desired = (0, 0)
+            with patch('gomoku.core.opening_book.CANDIDATES', (record(board, player, desired),)):
+                engine.opening_book = OpeningBook()
+            self.assertEqual(engine.opening_book._lookup_choices(board, player), ())
+            ranked = [engine.deep_search._candidate_result(*desired, 12)]
+            with patch.object(engine.deep_search, 'rank_candidates', return_value=ranked) as rank:
+                result = engine.analyze_turn(board, player)
+            self.assertIn(desired, rank.call_args.args[1])
+            self.assertEqual(result['part4_result']['type'], 'searched')
+            self.assertEqual(engine.opening_source, 'candidate')
+            self.assertEqual(result['part4_result']['ranked'][0]['state'], 0)
 
     def test_new_game_redraws_orientation_but_undo_and_rebuild_preserve_it(self):
         with patch('gomoku.core.engine.SystemRandom') as random_source:
@@ -228,15 +321,29 @@ class OpeningBookTest(unittest.TestCase):
                 self.assertEqual((board, engine.search.sb, engine.search.sw,
                                   engine.search._direction_levels), before)
 
-    def test_missing_book_first_three_uses_rules_without_deep_search(self):
+    def test_missing_book_first_three_returns_to_original_search_for_both_colors(self):
+        for player, count in ((BLACK, 2), (WHITE, 3)):
+            engine, board, _moves = setup_position(count)
+            engine.opening_book = OpeningBook(())
+            before = copy.deepcopy((board, engine.search.sb, engine.search.sw))
+            with patch.object(engine.deep_search, 'rank_candidates', wraps=engine.deep_search.rank_candidates) as rank:
+                result = engine.analyze_turn(board, player)
+            self.assertTrue(rank.called)
+            r, c = result['part4_result']['move']
+            self.assertEqual(board[r][c], 0)
+            self.assertIsNone(engine.opening_source)
+            self.assertEqual(result['part4_result']['type'], 'searched')
+            self.assertEqual((board, engine.search.sb, engine.search.sw), before)
+
+    def test_far_from_center_off_book_first_move_stays_legal(self):
         engine = Engine()
         engine.opening_book = OpeningBook(())
         board = empty_board()
         board[0][0] = BLACK
-        with patch.object(engine.deep_search, 'rank_candidates', side_effect=AssertionError('谱外也不能深推')):
-            result = engine.analyze_turn(board, WHITE)
+        engine.search.rebuild_all(board)
+        result = engine.analyze_turn(board, WHITE)
         r, c = result['part4_result']['move']
-        self.assertEqual(engine.opening_source, 'rules')
+        self.assertIsNone(engine.opening_source)
         self.assertEqual(board[r][c], 0)
         self.assertLessEqual(max(r, c), 1, '远离中心的首手应就近应对，不能固定走天元邻点')
 

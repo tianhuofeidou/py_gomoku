@@ -1,0 +1,877 @@
+{
+  "rule": "freestyle15",
+  "source_rule": "renju",
+  "coordinate_system": "zero-based (row,column); source A-O/1-15 converted with row=15-number",
+  "purpose": "Human opening shapes and reference variations choose analysis coverage only; no renju win/loss labels are imported. Reference replies can include weak defenses; engine selects the actual recommendation under freestyle rules.",
+  "white_second": [
+    [
+      6,
+      7
+    ],
+    [
+      6,
+      8
+    ]
+  ],
+  "shape_source_url": "https://www.ljrenju.com/croom/kjjj/r5.htm",
+  "openings": [
+    {
+      "opening": "D1",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          5,
+          7
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          8
+        ],
+        [
+          5,
+          8
+        ],
+        [
+          7,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d01/d01.htm",
+      "source_sha256": "e54ce49fc4952daa3509cd045a6ab7740cba19dbaffe4128a1b9b434616fd295"
+    },
+    {
+      "opening": "D2",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          5,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          9
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d02/d02.htm",
+      "source_sha256": "8da54dfae4d41648e38ed1f6124e2b08f232ae6f6b028ac022701a35a84f239e"
+    },
+    {
+      "opening": "D3",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          5,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          8
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d03/d03.htm",
+      "source_sha256": "da165f0107b1e0ba6d775789ee155e00bc63a267470b769de816a9cab55eefe3"
+    },
+    {
+      "opening": "D4",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          6,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          8
+        ],
+        [
+          8,
+          6
+        ],
+        [
+          5,
+          9
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d04/d04.htm",
+      "source_sha256": "12563cb99da7cf03bdae442919f49daffbf869b78eba6856b1eb50caa18f7bea"
+    },
+    {
+      "opening": "D5",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          6,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          9
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          6,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d05/d05.htm",
+      "source_sha256": "937a2535587e27d403fd0f8a85abed1574b3aa3bcb2a74efe594dda1c4cde383"
+    },
+    {
+      "opening": "D6",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          7,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          8,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d06/d06.htm",
+      "source_sha256": "bc352149fc70b13374ab6847e852e3988a37cc85b3be4aefdeb6c998da3e6a86"
+    },
+    {
+      "opening": "D7",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          7,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          8
+        ],
+        [
+          7,
+          6
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d07/d07.htm",
+      "source_sha256": "c31344bcfb7d947b1ddde4ecd89810e427295db33855ee1ebecc473536e0a3ca"
+    },
+    {
+      "opening": "D8",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          8,
+          7
+        ]
+      ],
+      "reference_replies": [
+        [
+          8,
+          8
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          9,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d08/d08.htm",
+      "source_sha256": "ac7d239a53847d47e8ee570e346c51a2e209e0bb76da9e6baaf14e4b882d48ae"
+    },
+    {
+      "opening": "D9",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          6
+        ],
+        [
+          8,
+          6
+        ],
+        [
+          5,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d09/d09.htm",
+      "source_sha256": "1b9d9606ee78fc3f61fddea494e406a50965b8683c412a706f9172327ec43917"
+    },
+    {
+      "opening": "D10",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          8,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          6
+        ],
+        [
+          9,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d10/d10.htm",
+      "source_sha256": "b67cfba60afb418e6d3d770edb3aead148bb78278d94f17dcebbf243584c58ce"
+    },
+    {
+      "opening": "D11",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          9,
+          7
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          8
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d11/d11.htm",
+      "source_sha256": "671db06ebf751152ab05f3e69b6145df6965cee6a64ed36cb2c9efcc86857615"
+    },
+    {
+      "opening": "D12",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          9,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          6
+        ],
+        [
+          8,
+          5
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d12/d12.htm",
+      "source_sha256": "b0c5cf28c7299199eebf88c3ac19cfa838cc752dfe1f5b7fb4be0f3466f081ba"
+    },
+    {
+      "opening": "D13",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          6
+        ],
+        [
+          6,
+          6
+        ],
+        [
+          8,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/d13/d13.htm",
+      "source_sha256": "b2fd5da3d072af45df503ae0307a75f036569665a6a16fa90c7f6c43dce16426"
+    },
+    {
+      "opening": "I1",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          5,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          5,
+          8
+        ],
+        [
+          5,
+          7
+        ],
+        [
+          6,
+          7
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i01/i01.htm",
+      "source_sha256": "92166d108777c996cfca829fe70883f8636546162cad976d90e127f371e76ec5"
+    },
+    {
+      "opening": "I2",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          6,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          8
+        ],
+        [
+          7,
+          9
+        ],
+        [
+          6,
+          7
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i02/i02.htm",
+      "source_sha256": "327e7ec54956c06e670484008ed27408c172ba64e53811d6e461872d8bc68e25"
+    },
+    {
+      "opening": "I3",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          7,
+          8
+        ],
+        [
+          8,
+          9
+        ],
+        [
+          8,
+          7
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i03/i03.htm",
+      "source_sha256": "2164cd6442a4a367d33f2eefbd46e742cdcfc023bca5e8cf6f52fd886c128db4"
+    },
+    {
+      "opening": "I4",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          8,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          8,
+          7
+        ],
+        [
+          7,
+          9
+        ],
+        [
+          6,
+          7
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i04/i04.htm",
+      "source_sha256": "4a5f2f4d5e7bd2ee51c1e0ed7c2c1156be5bf057c31bf52dec9fa7860137897a"
+    },
+    {
+      "opening": "I5",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          6
+        ],
+        [
+          8,
+          8
+        ],
+        [
+          7,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i05/i05.htm",
+      "source_sha256": "4c6e18f3a0fe07ad16b3a7e69e819ac8fc706e72987e31419f60375835a3ae77"
+    },
+    {
+      "opening": "I6",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          7
+        ],
+        [
+          8,
+          7
+        ],
+        [
+          8,
+          9
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i06/i06.htm",
+      "source_sha256": "4348c855971ed5116f39f57e856503a94c063640b7b5b7db99b9d7af8459f042"
+    },
+    {
+      "opening": "I7",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          8,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          6
+        ],
+        [
+          9,
+          9
+        ],
+        [
+          7,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i07/i07.htm",
+      "source_sha256": "d9e4403676abf25b9cbd08ec97b14da4f88a9ead84351ad6b3a1be945f09f064"
+    },
+    {
+      "opening": "I8",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          9,
+          8
+        ]
+      ],
+      "reference_replies": [
+        [
+          9,
+          7
+        ],
+        [
+          8,
+          7
+        ],
+        [
+          7,
+          9
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i08/i08.htm",
+      "source_sha256": "0d2a32c0ed9d9b05fb714afd33e994eb2e4b5b98f2587795d6688e44eb0c0234"
+    },
+    {
+      "opening": "I9",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          8,
+          7
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          6
+        ],
+        [
+          9,
+          7
+        ],
+        [
+          7,
+          9
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i09/i09.htm",
+      "source_sha256": "6282ff56311aa6d32a2ca4c67cf61321503b7f266fd138a595f5cc1572ef6a20"
+    },
+    {
+      "opening": "I10",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          9,
+          7
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          6
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          8,
+          7
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i10/i10.htm",
+      "source_sha256": "73dd326c8adee6905ff5c54374526759c29d864fe32556dc478224616a329ac3"
+    },
+    {
+      "opening": "I11",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          8,
+          6
+        ]
+      ],
+      "reference_replies": [
+        [
+          6,
+          7
+        ],
+        [
+          6,
+          5
+        ],
+        [
+          6,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i11/i11.htm",
+      "source_sha256": "da2b576061a39cd635f58efdaf1d0a4b233b80b82e0de0268e90fdaafef24850"
+    },
+    {
+      "opening": "I12",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          9,
+          6
+        ]
+      ],
+      "reference_replies": [
+        [
+          8,
+          8
+        ],
+        [
+          8,
+          5
+        ],
+        [
+          7,
+          8
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i12/i12.htm",
+      "source_sha256": "6049815397c92268b00a93b1f98a1d14699bbf8ba1bba4c1760258d66bb028c8"
+    },
+    {
+      "opening": "I13",
+      "history": [
+        [
+          7,
+          7
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          9,
+          5
+        ]
+      ],
+      "reference_replies": [
+        [
+          5,
+          8
+        ],
+        [
+          6,
+          6
+        ],
+        [
+          7,
+          6
+        ]
+      ],
+      "source_url": "https://www.ljrenju.com/croom/i13/i13.htm",
+      "source_sha256": "e576fe8438b7da9af7142af6d01e6810d88cdc01438be11fe2d4a225a5010867"
+    }
+  ]
+}
