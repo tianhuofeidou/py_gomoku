@@ -138,7 +138,7 @@ class CliEndToEndTest(unittest.TestCase):
 
     def test_gomocup_cli_reports_version_and_returns_a_legal_first_move(self):
         output = self.run_cli('-m', 'gomoku.protocol', input='ABOUT\nSTART 15\nBEGIN\nEND\n')
-        self.assertIn('version="1.9.0"', output)
+        self.assertIn('version="1.9.1"', output)
         self.assertIn('OK', output)
         self.assertIn('7,7', output.splitlines())
 

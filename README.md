@@ -1,4 +1,4 @@
-# 棋逢小鲸 v1.9.0
+# 棋逢小鲸 v1.9.1
 
 棋逢小鲸（Gomoku）是一个本地运行的五子棋程序，使用 15×15 棋盘，黑方先行，不设禁手。项目提供图形界面、命令行对战和 AI 自弈功能。正式版本采用纯 Python 算法，不需要联网，也不依赖大模型或神经网络。
 
@@ -178,6 +178,7 @@ pattern → search → deep_search → engine
 生成数据及来源校验值见 `gomoku/core/opening_book_data.py`。原始图谱、注释和软件压缩包不入库。
 离线复现：`python scripts/import_classical_openings.py --manifest gomoku/data/classical_opening_recommendations.json --library-dir <已下载的lib目录> --output-dir <临时目录>`。
 工具检查源文件 SHA256，区分推荐和研究线，不按遍历次序猜最强着；只写指定目录，不自动覆盖正式库。
+文本清单的摘要统一按 LF 换行计算，生成文本固定使用 LF；原始 `.lib` 仍按原始字节校验 SHA256。
 原 Rapfi 生成脚本保留作独立实验，不是当前正式数据来源。
 桌面辅助分析和实际落子显示“棋谱开局”或“棋谱候选＋纯算法”；谱外按实际算法路径显示，叶子统计仍按实际计算显示。
 
@@ -412,6 +413,8 @@ python scripts/sync_android_engine.py --check
 收录 AI 输掉的棋局、定位疑似关键败手，引擎更新后从败手附近恢复局面重赛，检查旧问题是否仍存在。
 
 **数据位置**：`~/.gomoku/loss-book.json`（可用 `GOMOKU_HOME` 覆盖）。**不写入源码目录，不进 Git。**
+
+败局库 CLI 的标准输出和错误输出使用 UTF-8，包括帮助和导入结果；重定向输出时也按 UTF-8 读取。
 
 **自动收录**：AI 在**人机模式**下正常输棋并完成归档时，`Game._archive_finished` 会自动收录本局（来源记为 `live`），并把来源 id 写进对局历史。**悔棋撤销终局时**（`_rollback_solidify`）会撤销这一条收录——只删该来源，同棋谱的其它失败记录不受影响。
 收录失败记在 history 的 `lossBookError` 字段里；撤销失败会向调用方抛出异常，不静默忽略。

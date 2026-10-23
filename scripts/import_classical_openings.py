@@ -201,7 +201,9 @@ def main(argv=None):
     parser.add_argument('--library-dir', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args(argv)
-    raw = args.manifest.read_bytes()
+    # Git 在不同平台检出时会转换换行；文本清单统一按 LF 计算摘要。
+    # 只归一化 CRLF，来源 .lib 仍在 build_book 中按原始二进制严格校验。
+    raw = args.manifest.read_bytes().replace(b'\r\n', b'\n')
     result = build_book(json.loads(raw), args.library_dir)
     records, alternatives, candidates, provenance, evidence = result
     provenance['manifest_sha256'] = hashlib.sha256(raw).hexdigest()
@@ -212,9 +214,10 @@ def main(argv=None):
         text += ''.join('    ' + repr(row) + ',\n' for row in sorted(rows.values()))
         text += ')\n'
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / 'opening_book_data.py').write_text(text, encoding='utf-8')
+    (args.output_dir / 'opening_book_data.py').write_text(text, encoding='utf-8', newline='\n')
     (args.output_dir / 'classical_audit.json').write_text(
-        json.dumps({'provenance': provenance, 'evidence': evidence}, ensure_ascii=False, indent=2), encoding='utf-8')
+        json.dumps({'provenance': provenance, 'evidence': evidence}, ensure_ascii=False, indent=2),
+        encoding='utf-8', newline='\n')
     print(json.dumps({key: provenance[key] for key in
                       ('positions', 'alternative_moves', 'candidate_positions',
                        'recommended_by_stones', 'candidates_by_stones')}, ensure_ascii=False))

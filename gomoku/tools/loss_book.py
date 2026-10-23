@@ -230,6 +230,11 @@ def _pick(cases, id_prefix):
 
 
 def main(argv=None):
+    # Windows CI 的管道可能使用 cp1252；在 argparse 输出中文帮助前统一编码。
+    # StringIO 等文本捕获流没有 reconfigure，也不经过字节编码，保持其接口。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     ap = argparse.ArgumentParser(prog='loss_book', description='败局回归库')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
