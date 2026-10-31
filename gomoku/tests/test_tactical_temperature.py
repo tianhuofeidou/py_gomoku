@@ -73,8 +73,10 @@ class TacticalTemperatureTest(unittest.TestCase):
                                                 complete_scores=complete)
                     self.assertEqual(rows[0]['state_name'], '无')
                     self.assertEqual(len(leaves), 1)
-                    self.assertEqual(leaves[0]['path'], [(7, 7, player)])
-                    self.assertTrue(leaves[0]['kill_active'], '落子后确实产生新的活四候选')
+                    self.assertEqual(leaves[0]['path'], [], '零温度普通根步必须在落子前停止')
+                    self.assertEqual(leaves[0]['score_player'], player)
+                    self.assertIsNone(leaves[0]['next_reason'])
+                    self.assertFalse(leaves[0]['kill_active'], '未落普通步，不能产生落子后的新威胁')
                     self.assertEqual(costs, [deep._dt(60)])
                     self.assertEqual(snapshot(engine, board), before)
 
@@ -93,7 +95,9 @@ class TacticalTemperatureTest(unittest.TestCase):
             leaves = capture_leaves(deep)
             deep.rank_candidates(board, {(14, 14): 100}, player, complete_scores=True)
             self.assertEqual(len(leaves), 1)
-            self.assertEqual(leaves[0]['path'], [(14, 14, player)])
+            self.assertEqual(leaves[0]['path'], [], '其他战术点不能让无关普通根步免费')
+            self.assertEqual(leaves[0]['score_player'], player)
+            self.assertTrue(leaves[0]['next_reason'], '盘面战术存在，但该候选本身不属于战术集合')
             self.assertEqual(snapshot(engine, board), before)
 
     def test_weight_80_defense_is_current_tactical_move_and_is_free(self):
@@ -124,7 +128,7 @@ class TacticalTemperatureTest(unittest.TestCase):
             self.assertEqual(costs[0], (80, True, 0))
             self.assertEqual(snapshot(engine, board), before)
 
-    def test_trigger_uses_empty_point_subclasses_not_weight_or_legacy_fatal(self):
+    def test_diagnostic_kill_scan_uses_empty_point_subclasses(self):
         engine = Engine()
         deep = engine.deep_search
         board = empty_board()

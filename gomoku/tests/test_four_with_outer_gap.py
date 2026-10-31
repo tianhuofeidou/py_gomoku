@@ -117,7 +117,30 @@ class FourWithOuterGapTest(unittest.TestCase):
                     engine.search.zero_history, engine.search.zero_active))
                 result = engine.analyze_turn(board, defender)
                 self.assertEqual(result['part3_candidates']['reason'], 'opp-vcf')
-                self.assertIn(tuple(result['part4_result']['move']), (point('D1'), point('H5')))
+                # 独立规则核验：假设对手落 H5，两端下一手都实际成五。
+                # 占中心或任意一端都可破坏活四；I6 是 d=1 近端，不能漏掉。
+                h5 = point('H5')
+                board[h5[0]][h5[1]] = 3 - defender
+                winning_ends = set()
+                try:
+                    for rr in range(15):
+                        for cc in range(15):
+                            if board[rr][cc] != 0:
+                                continue
+                            board[rr][cc] = 3 - defender
+                            try:
+                                if check_win(board, rr, cc, 3 - defender):
+                                    winning_ends.add((rr, cc))
+                            finally:
+                                board[rr][cc] = 0
+                finally:
+                    board[h5[0]][h5[1]] = 0
+                self.assertEqual(winning_ends, {point('D1'), point('I6')})
+                self.assertEqual(points, {h5: 100.0, **dict.fromkeys(winning_ends, 80.0)})
+                selected = tuple(result['part4_result']['move'])
+                self.assertIn(selected, winning_ends | {h5})
+                self.assertEqual(selected, (result['part4_result']['ranked'][0]['r'],
+                                            result['part4_result']['ranked'][0]['c']))
                 self.assertNotEqual(tuple(result['part4_result']['move']), point('K7'))
                 self.assertEqual((board, engine.moves, engine.search.sb, engine.search.sw,
                     engine.search._direction_levels, engine.search.gear,

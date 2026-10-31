@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""普通叶子只在根候选方刚落子后评估；实际成五优先于截断补手。"""
+"""耗尽温度只续零耗温战术；在当前盘面按根方评分，实际成五优先。"""
 import copy
 import types
 import unittest
@@ -15,8 +15,12 @@ def capture_leaves(deep):
 
     def observe(self, board, branch, status, player, ctx_branch=None):
         value = original(board, branch, status, player, ctx_branch)
-        records.append(dict(status=status, last_player=branch[-1][2],
+        last_player = branch[-1][2] if branch else None
+        next_player = 3 - last_player if last_player is not None else player
+        records.append(dict(status=status, last_player=last_player,
             path=[(r, c, p) for r, c, p, _w in branch], score=value,
+            score_player=player, next_player=next_player,
+            next_reason=self._tactical_result(board, next_player)[0],
             kill_active=self._has_kill_points(board)))
         return value
 
@@ -39,7 +43,7 @@ class LeafTurnBoundaryTest(unittest.TestCase):
                 self.assertEqual(leaves[0]['path'], [(7, 7, player)])
                 self.assertEqual(board, empty_board())
 
-    def test_tptc_forced_block_is_played_before_leaf_and_state_restored(self):
+    def test_tptc_stops_on_current_board_without_ordinary_extra_move(self):
         for defender in (WHITE, BLACK):
             for complete in (False, True):
                 with self.subTest(defender=defender, complete=complete):
@@ -59,20 +63,54 @@ class LeafTurnBoundaryTest(unittest.TestCase):
                                                        complete_scores=complete)
                     stale = [r for r in leaves if r['status'] == 'stale']
                     self.assertTrue(stale)
-                    self.assertTrue(all(r['last_player'] == defender for r in stale))
-                    self.assertTrue(all(not r['kill_active'] for r in stale))
-                    forcing = [r for r in stale if [m[:2] for m in r['path'][:2]]
-                               == [point('H5'), point('G3')]]
-                    self.assertTrue(forcing)
-                    self.assertTrue(all([m[:2] for m in r['path'][:3]]
-                                        == [point('H5'), point('G3'), point('G2')] for r in forcing))
-                    # 普通步不能靠后续新威胁重开免温链；G2 堵住后允许立即截断。
-                    self.assertTrue(all(len(r['path']) == 3 for r in forcing))
-                    self.assertTrue(all(r['score'] > -920 for r in forcing))
+                    self.assertTrue(all(r['score_player'] == defender for r in stale))
+                    self.assertTrue(all(r['next_reason'] is None for r in stale))
+                    # 当前输入确实覆盖对方刚落完即停止，不能再强补本方普通一步。
+                    self.assertTrue(any(r['last_player'] == 3 - defender for r in stale))
+                    stopped = [r for r in stale if [m[:2] for m in r['path']]
+                               == [point('H5'), point('H4')]]
+                    self.assertTrue(stopped)
+                    self.assertTrue(all(r['score'] > -920 for r in stale))
                     self.assertEqual((board, engine.moves, engine.search.sb, engine.search.sw,
                         engine.search._direction_levels, engine.search.gear,
                         engine.search.zero_history, engine.search.zero_active), before)
                     self.assertIsNone(engine.deep_search._root_pass)
+
+    def test_tptc_forced_g2_block_is_free_even_with_no_attacking_subclass(self):
+        for defender in (WHITE, BLACK):
+            for complete in (False, True):
+                with self.subTest(defender=defender, complete=complete):
+                    engine = Engine()
+                    deep = engine.deep_search
+                    deep.T0 = -5
+                    board = empty_board()
+                    for i, token in enumerate(list(TPTC_PREFIX) + ['H5', 'G3']):
+                        r, c = point(token)
+                        side = 3 - defender if i % 2 == 0 else defender
+                        board[r][c] = side
+                        engine.on_move(board, r, c, side)
+                    # 额外两步的实际行棋方明确固定，避免前缀长度隐含视角。
+                    self.assertEqual(board[point('H5')[0]][point('H5')[1]], defender)
+                    self.assertEqual(board[point('G3')[0]][point('G3')[1]], 3 - defender)
+                    reason, points = engine.search.tactical_candidates(board, defender)
+                    self.assertEqual(reason, 'opp-five')
+                    self.assertEqual(points, {point('G2'): 100.0})
+                    state = engine.search.sb if defender == BLACK else engine.search.sw
+                    self.assertEqual(state[point('G2')[0]][point('G2')[1]], 17)
+                    before = copy.deepcopy((board, engine.moves, engine.search.sb, engine.search.sw,
+                        engine.search._direction_levels, engine.search.gear,
+                        engine.search.zero_history, engine.search.zero_active))
+                    leaves = capture_leaves(deep)
+                    deep.rank_candidates(board, points, defender, complete_scores=complete)
+                    self.assertEqual(len(leaves), 1)
+                    self.assertEqual(leaves[0]['path'], [(*point('G2'), defender)])
+                    self.assertEqual(leaves[0]['status'], 'stale')
+                    self.assertEqual(leaves[0]['score_player'], defender)
+                    self.assertIsNone(leaves[0]['next_reason'])
+                    self.assertEqual((board, engine.moves, engine.search.sb, engine.search.sw,
+                        engine.search._direction_levels, engine.search.gear,
+                        engine.search.zero_history, engine.search.zero_active), before)
+                    self.assertIsNone(deep._root_pass)
 
     def test_opponent_actual_five_is_terminal_without_extra_reply(self):
         for defender in (WHITE, BLACK):

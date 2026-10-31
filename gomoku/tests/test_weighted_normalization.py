@@ -33,7 +33,7 @@ class WeightedNormalizationTest(unittest.TestCase):
         self.assertEqual(DeepSearch._weighted_average([]), 0.0)
         self.assertEqual(DeepSearch._weighted_average([(0, 123)]), 0.0)
 
-    def test_tptc_move48_prefers_h5_in_both_colors_and_score_paths(self):
+    def test_tptc_move48_ranks_three_defenses_in_both_colors_and_score_paths(self):
         for defender in (WHITE, BLACK):
             for complete in (False, True):
                 with self.subTest(defender=defender, complete=complete):
@@ -51,11 +51,14 @@ class WeightedNormalizationTest(unittest.TestCase):
                         engine.search.zero_history, engine.search.zero_active))
                     leaves = capture_leaves(engine.deep_search)
                     result = engine.analyze_turn(board, defender, complete_scores=complete)
-                    self.assertEqual(tuple(result['part4_result']['move']), point('H5'))
+                    self.assertEqual(tuple(result['part4_result']['move']), point('I6'))
                     ranked = result['part4_result']['ranked']
-                    # 当前战术步免温；不采用“普通步造威胁也免费”的额外展开结论。
-                    self.assertEqual([row['state_name'] for row in ranked], ['无', '无'])
-                    self.assertGreater(ranked[0]['score'], ranked[1]['score'])
+                    # I6 为修复后的近端防守点；三点均走零耗温战术，普通补步已禁止。
+                    self.assertEqual([(row['r'], row['c']) for row in ranked],
+                                     [point('I6'), point('D1'), point('H5')])
+                    self.assertEqual([row['state_name'] for row in ranked], ['无'] * 3)
+                    for higher, lower_row in zip(ranked, ranked[1:]):
+                        self.assertGreater(higher['score'], lower_row['score'])
                     lower = min(row['score'] for row in leaves)
                     upper = max(row['score'] for row in leaves)
                     for row in ranked:

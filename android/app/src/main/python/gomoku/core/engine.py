@@ -56,6 +56,7 @@ class Engine:
         并记录真实着法序列（记忆匹配用；深推模拟走 search.on_move，不经过这里）。"""
         self.search.on_move(board, r, c, player)
         self.moves.append((r, c, player))
+        self.deep_search.advance_search_cache(board, r, c, player)
 
     def _reset_opening_orientation(self):
         """只在创建引擎或明确新对局时抽取方向，与其他算法的随机序列隔离。"""
@@ -65,6 +66,7 @@ class Engine:
         """重建真实棋谱及搜索状态，保留网络/温度及本局开局方向（包括悔棋到空盘）。"""
         self.search = Search(self.pattern)
         self.deep_search.search = self.search
+        self.deep_search.clear_search_cache()
         self.moves = []
         self._memory = None
         self.decision_net_used = False
@@ -166,7 +168,7 @@ class Engine:
                     'points': tactical if defense else list(tactical)}
         else:
             # 机机对战中黑白双方都可用动态配比；
-            # 深推内部仍用固定 3攻2防，保证搜索树稳定。
+            # 深推内部普通候选固定 2攻1防，根层仍按原动态档位取点。
             gear = self.search._choose_gear(board, player)
             # fallback 候选带 _candidate_score 真实分（dict 形态），
             # rank_candidates 按分分配温度：强候选（冲四/活三成型点）推深。

@@ -604,7 +604,7 @@ class Search:
         1. 临时模拟 player 落 (r,c)，analyze_point 得各方向棋型记录
         2. 中心 (r,c) = 100 分（is_kill=True，占掉落点即破坏杀型）或 60 分（活三）
         3. 对必杀级记录（LIVE4/SLEEP4/LIVE3）的每条线，按 l_edge/r_edge
-           提取线端空位（类型 1/3/4 = 活端/半活端/断裂端）作为端点候选 = 80 分
+           提取合法线端空位（类型 1/3/4/5，包含距离为 1 的近端）作为端点候选 = 80 分
            （is_kill）或 60 分；再按 gap_location 提取缝（两个 player 子之间的空位，
            xx_xx 中间格）作为候选，同样 = 80/60 分。数据与 scan_two 一致。
         返回 {(r, c): score}（score 用于深度推演的温度分配/排序）。
@@ -622,13 +622,11 @@ class Search:
                 dr, dc = rec['dir']
                 # ① 端点提取：每条线取两端空位，l_edge 用负方向(减)、r_edge 用正方向(加)，
                 #    距离 d 与方向 (dr,dc) 结合得端空位坐标。
-                #    第一步过滤【有没有子】：d=1 = 端紧贴成形点、中间无 player 子（无子方向，
-                #    如活四的外侧空端）→ 不提取；d>1 = 端跨过 player 子链（有子方向）→ 提取。
-                #    第二步过滤【端类型】：与 pattern._classify 的 OPEN_END 一致 (1,3,4,5)
+                #    d=1 仍是有效近端：例如假设 I8 成 I8-I10 活三，I7 与 I11 都可封端。
+                #    只按端类型、边界与空位筛选，不能因近端紧邻假设落点就排除。
+                #    端类型与 pattern._classify 的 OPEN_END 一致 (1,3,4,5)
                 #    1=活(__) 3=半活(_|) 4=断裂端(第二个_x) 5=延伸端(__x)
                 for (d, t), sign in ((rec['l_edge'], -1), (rec['r_edge'], +1)):
-                    if d <= 1:
-                        continue                # 无子方向：中间没有 player 子，端无防守意义
                     if t not in (1, 3, 4, 5):
                         continue
                     pr, pc = r + sign * d * dr, c + sign * d * dc   # 该端空位（紧贴段外）
@@ -888,8 +886,8 @@ class Search:
 
     def _fallback(self, board, gear=None, player=WHITE, with_score=False):
         """兜底候选（无必杀时）：默认 3 攻 + 2 防 = 5 个点，保证不重复。
-        传入 gear 时按档位取 (攻, 防) 配比；gear=None 保持固定 3攻2防
-        （深推内部与黑应手继续用固定配比，保证搜索树稳定）。
+        传入 gear 时按档位取 (攻, 防) 配比；gear=None 保持固定 3攻2防。
+        深推内部的 2攻1防通过 _fallback_by_count 复用同一套评分和去重。
 
         player 指定“进攻方”视角：
           - WHITE：白攻 TopN + 黑防 TopM（AI 执白的第一层候选）
@@ -899,6 +897,11 @@ class Search:
         with_score=True 时返回 [(r, c, score)]——分数即 _candidate_score
         0~100 综合分，供温度银行按候选质量分配推演深度（原实现只用于
         排序挑选、返回时丢弃，深推展开被硬编码 60，强弱点推得一样浅）。"""
+        attack_n, defend_n = GEAR_PROFILE[DEFAULT_GEAR if gear is None else gear]
+        return self._fallback_by_count(board, attack_n, defend_n, player, with_score)
+
+    def _fallback_by_count(self, board, attack_n, defend_n, player=WHITE, with_score=False):
+        """按明确攻防名额生成候选；共用原评分、去重、顺序和权重语义。"""
         syms = self._board_symmetries(board)
         def top_pts(state, player, n, mode, exclude=()):
             pts = [(r, c) for r in range(SIZE) for c in range(SIZE)
@@ -925,10 +928,6 @@ class Search:
                 if len(chosen) >= n:
                     break
             return chosen
-        if gear is None:
-            attack_n, defend_n = GEAR_PROFILE[DEFAULT_GEAR]
-        else:
-            attack_n, defend_n = GEAR_PROFILE[gear]
         if player == WHITE:
             attack_state, attack_player = self.sw, WHITE
             defend_state, defend_player = self.sb, BLACK
