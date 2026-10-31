@@ -146,11 +146,11 @@ class PatternAnalyzer:
 
             i += 1
 
-        # 双侧扫描可能先把短侧的跨缝子计入，再从长侧补齐连续五子。
-        # 此时先前的「4 连截断」已错过判定时机，不能让外围缝把成五降成眠四。
-        # 只对已有连续五/长连的记录收口；未成五的棋型仍沿用原有截断规则。
+        # 短侧可能先计入跨缝子，长侧随后才补齐连续四/五，错过扫描中的4连截断。
+        # 收尾优先保留基子所在连续段：连续四仍按紧邻两端判活四/眠四，连续五即成五。
+        # 只收回已有缝侧，未跨缝侧的真实堵端保留；真正的跳四不满足连续段>=4。
         contiguous = l_contig + r_contig + 1
-        if contiguous >= 5 and (l_gap_count or r_gap_count):
+        if contiguous >= 4 and (l_gap_count or r_gap_count):
             stones = contiguous
             if l_gap_count:
                 l_edge = [l_contig + 1, 4]

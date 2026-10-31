@@ -80,7 +80,8 @@ class CliEndToEndTest(unittest.TestCase):
         self.assertIn(ident[:8], self.run_cli(*command, 'list', '--kind', 'loss'))
         self.assertIn('疑似关键败手', self.run_cli(*command, 'locate', '--id', ident))
         located = next(c for c in self.read_store()['cases'] if c['id'] == ident)
-        self.assertTrue(any(s['ply'] == 9 and s['reason'] == 'missed-five' for s in located['suspects']))
+        self.assertTrue(any(s['ply'] == 9 and s['reason'] == 'missed-win'
+                            and s['alternative'] == 'E8' for s in located['suspects']))
         self.assertIn('已人工指定', self.run_cli(*command, 'locate', '--id', ident, '--ply', '5'))
         output = self.run_cli(*command, 'retest', '--id', ident, '--max-plies', '1')
         current = next(c for c in self.read_store()['cases'] if c['id'] == ident)
@@ -138,7 +139,7 @@ class CliEndToEndTest(unittest.TestCase):
 
     def test_gomocup_cli_reports_version_and_returns_a_legal_first_move(self):
         output = self.run_cli('-m', 'gomoku.protocol', input='ABOUT\nSTART 15\nBEGIN\nEND\n')
-        self.assertIn('version="1.9.1"', output)
+        self.assertIn('version="1.10.0"', output)
         self.assertIn('OK', output)
         self.assertIn('7,7', output.splitlines())
 

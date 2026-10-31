@@ -25,7 +25,7 @@ from gomoku.session import PlaySession
 from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.9.1'
+APP_TITLE = '棋逢小鲸 v1.10.0'
 
 
 def _resource_path(relative_path):
@@ -106,8 +106,12 @@ class GomokuApp:
             ttk.Button(panel, text=label, command=cmd).grid(row=10 + i, column=0, sticky='ew', pady=2)
         self.assist_button = ttk.Button(panel, text='AI辅助分析', command=self._pvp_assist)
         self.assist_button.grid(row=15, column=0, sticky='ew', pady=2)
-        ttk.Button(panel, text='查看记忆', command=self._show_memory).grid(
-            row=16, column=0, sticky='ew', pady=2)
+        record_buttons = ttk.Frame(panel)
+        record_buttons.grid(row=16, column=0, sticky='ew', pady=2)
+        ttk.Button(record_buttons, text='查看记忆', command=self._show_memory).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(record_buttons, text='棋谱复盘', command=self._open_replay).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
         # AI 棋力档位（温度银行预算映射；越高推演越深越慢，下一手生效）
         ttk.Label(panel, text='AI 棋力').grid(row=17, column=0, sticky='w', pady=(10, 2))
@@ -143,6 +147,11 @@ class GomokuApp:
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
         self.canvas.bind('<Button-1>', self._on_click)
         self.canvas.bind('<Configure>', lambda _e: self._refresh())
+
+    def _open_replay(self):
+        """独立只读棋谱窗口，不替换当前对局或写入胜负记忆。"""
+        from gomoku.tools.replay_gui import ReplayWindow
+        ReplayWindow(self.root, board_style=GomokuApp)
 
     def _grid(self):
         """动态棋盘参数：(margin_x, margin_y, cell)。

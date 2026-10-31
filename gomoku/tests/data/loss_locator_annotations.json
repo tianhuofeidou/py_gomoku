@@ -1,0 +1,497 @@
+{
+  "schema": 1,
+  "annotated_before_implementation": true,
+  "annotation_author": "Codex manual review",
+  "independent_accuracy_warning": "10个规则/强制链构造例具有人工可核验证据；4个实战例已用于开发，只评一致性。",
+  "cases": [
+    {
+      "id": "white-missed-unique-block",
+      "moves": [
+        "D8",
+        "C8",
+        "E8",
+        "A1",
+        "F8",
+        "C1",
+        "G8",
+        "E1",
+        "H8"
+      ],
+      "aiColor": 2,
+      "setup_plies": 7,
+      "expected_suspect_plies": [
+        8
+      ],
+      "expected_reason": "missed-block",
+      "basis": "manual-rule-proof",
+      "rationale": "黑方D8至G8已有四连，C8白子封端，仅H8能避免下一手成五。"
+    },
+    {
+      "id": "black-missed-unique-block",
+      "moves": [
+        "C8",
+        "D8",
+        "A1",
+        "E8",
+        "C1",
+        "F8",
+        "E1",
+        "G8",
+        "G1",
+        "H8"
+      ],
+      "aiColor": 1,
+      "setup_plies": 8,
+      "expected_suspect_plies": [
+        9
+      ],
+      "expected_reason": "missed-block",
+      "basis": "manual-rule-proof",
+      "rationale": "白方D8至G8已有四连，C8黑子封端，仅H8能避免下一手成五。"
+    },
+    {
+      "id": "black-missed-win-over-double-threat",
+      "moves": [
+        "D8",
+        "D6",
+        "E8",
+        "E6",
+        "F8",
+        "F6",
+        "G8",
+        "G6",
+        "A1",
+        "H6"
+      ],
+      "aiColor": 1,
+      "setup_plies": 8,
+      "expected_suspect_plies": [
+        9
+      ],
+      "expected_reason": "missed-win",
+      "basis": "manual-rule-proof",
+      "rationale": "黑方C8/H8均可立即成五，实战A1让白方H6成五；本方直接赢优先于对手双胜点。"
+    },
+    {
+      "id": "white-missed-win-over-double-threat",
+      "moves": [
+        "D8",
+        "D6",
+        "E8",
+        "E6",
+        "F8",
+        "F6",
+        "G8",
+        "G6",
+        "A1",
+        "B1",
+        "H8"
+      ],
+      "aiColor": 2,
+      "setup_plies": 9,
+      "expected_suspect_plies": [
+        10
+      ],
+      "expected_reason": "missed-win",
+      "basis": "manual-rule-proof",
+      "rationale": "白方C6/H6可立即成五，实战B1让黑方H8成五。"
+    },
+    {
+      "id": "black-already-double-threat",
+      "moves": [
+        "A1",
+        "D6",
+        "C1",
+        "E6",
+        "E1",
+        "F6",
+        "G1",
+        "G6",
+        "I1",
+        "H6"
+      ],
+      "aiColor": 1,
+      "setup_plies": 8,
+      "expected_suspect_plies": [],
+      "expected_reason": null,
+      "basis": "manual-rule-proof",
+      "rationale": "白方C6/H6两个不同胜点，本方无立即胜点，不能把I1归为可挽救的败手。"
+    },
+    {
+      "id": "white-already-double-threat",
+      "moves": [
+        "D8",
+        "A1",
+        "E8",
+        "C1",
+        "F8",
+        "E1",
+        "G8",
+        "G1",
+        "I3",
+        "I1",
+        "H8"
+      ],
+      "aiColor": 2,
+      "setup_plies": 9,
+      "expected_suspect_plies": [],
+      "expected_reason": null,
+      "basis": "manual-rule-proof",
+      "rationale": "黑方C8/H8两个胜点，本方无立即胜点，I1不是可挽救的败手。"
+    },
+    {
+      "id": "black-opportunity-restored",
+      "moves": [
+        "D8",
+        "D6",
+        "E8",
+        "E6",
+        "F8",
+        "F6",
+        "G8",
+        "G6",
+        "A1",
+        "A3",
+        "B1",
+        "H6"
+      ],
+      "aiColor": 1,
+      "setup_plies": 8,
+      "expected_suspect_plies": [
+        9,
+        11
+      ],
+      "expected_reason": "missed-win",
+      "basis": "manual-rule-proof",
+      "rationale": "双方错过立即胜点：白方A3没有兑现，黑方第11手仍可C8/H8直接赢。",
+      "expected_primary": 11
+    },
+    {
+      "id": "white-opportunity-restored",
+      "moves": [
+        "D8",
+        "D6",
+        "E8",
+        "E6",
+        "F8",
+        "F6",
+        "G8",
+        "G6",
+        "A1",
+        "B1",
+        "A3",
+        "B3",
+        "H8"
+      ],
+      "aiColor": 2,
+      "setup_plies": 9,
+      "expected_suspect_plies": [
+        10,
+        12
+      ],
+      "expected_reason": "missed-win",
+      "basis": "manual-rule-proof",
+      "rationale": "黑方A3返还机会，白方第12手仍可C6/H6直接赢。",
+      "expected_primary": 12
+    },
+    {
+      "id": "black-forcing-fork",
+      "moves": [
+        "E8",
+        "D8",
+        "F8",
+        "E2",
+        "G8",
+        "F2",
+        "H6",
+        "G2",
+        "H7",
+        "A1",
+        "A3",
+        "H2",
+        "B3",
+        "I2"
+      ],
+      "aiColor": 1,
+      "setup_plies": 10,
+      "expected_suspect_plies": [
+        11
+      ],
+      "expected_reason": "teacher-win-to-loss",
+      "basis": "manual-rule-proof",
+      "rationale": "H8造成E8-H8冲四(C端D8白子)，白仅I8可堵；黑H9造成H5/H10两个胜点。实战A3后白H2造成D2/I2双胜点。",
+      "teacher_required": true,
+      "winning_line": [
+        "H8",
+        "I8",
+        "H9"
+      ],
+      "winning_double": [
+        "H5",
+        "H10"
+      ],
+      "actual_reply": [
+        "H2"
+      ],
+      "actual_double": [
+        "D2",
+        "I2"
+      ]
+    },
+    {
+      "id": "white-forcing-fork",
+      "moves": [
+        "O15",
+        "E8",
+        "D8",
+        "F8",
+        "E2",
+        "G8",
+        "F2",
+        "H6",
+        "G2",
+        "H7",
+        "A1",
+        "A3",
+        "H2",
+        "B3",
+        "I2"
+      ],
+      "aiColor": 2,
+      "setup_plies": 11,
+      "expected_suspect_plies": [
+        12
+      ],
+      "expected_reason": "teacher-win-to-loss",
+      "basis": "manual-rule-proof",
+      "rationale": "在远端加入黑O15并交换局部颜色：白H8、黑I8被迫、白H9形成双胜点；实战A3允许黑H2双胜点。",
+      "teacher_required": true,
+      "winning_line": [
+        "H8",
+        "I8",
+        "H9"
+      ],
+      "winning_double": [
+        "H5",
+        "H10"
+      ],
+      "actual_reply": [
+        "H2"
+      ],
+      "actual_double": [
+        "D2",
+        "I2"
+      ]
+    },
+    {
+      "id": "development-game-3",
+      "moves": [
+        "H8",
+        "I9",
+        "H11",
+        "H10",
+        "G11",
+        "I11",
+        "I12",
+        "G10",
+        "F10",
+        "G9",
+        "F8",
+        "F9",
+        "E9",
+        "D8",
+        "H9",
+        "H12",
+        "G8",
+        "E8",
+        "G13",
+        "D10",
+        "D7",
+        "I10",
+        "I8",
+        "J8",
+        "K10",
+        "K7",
+        "L6",
+        "J12",
+        "K13",
+        "H13",
+        "H7",
+        "G6",
+        "D9",
+        "H6",
+        "K12",
+        "K9",
+        "I7",
+        "J6",
+        "L8",
+        "I6",
+        "F6",
+        "K6"
+      ],
+      "aiColor": 1,
+      "setup_plies": 3,
+      "expected_suspect_plies": [
+        37,
+        39
+      ],
+      "expected_reason": "teacher-win-to-loss",
+      "basis": "manual-review-assisted-by-prior-teacher",
+      "teacher_required": true,
+      "rationale": "已见开发棋例；标签依据人工复核和先前教师证据，不是独立手工数学真值，不计入硬真值准确率。"
+    },
+    {
+      "id": "development-game-23",
+      "moves": [
+        "H8",
+        "I7",
+        "J8",
+        "I8",
+        "I9",
+        "H10",
+        "J10",
+        "G7",
+        "H7",
+        "J7",
+        "H9",
+        "G9",
+        "H6",
+        "H5",
+        "K11",
+        "L12",
+        "G6",
+        "I6",
+        "G4",
+        "I5",
+        "I4",
+        "J12",
+        "K13",
+        "K12",
+        "M12",
+        "H4",
+        "K7",
+        "G5",
+        "F5",
+        "E7",
+        "F6",
+        "F8",
+        "D6",
+        "I11"
+      ],
+      "aiColor": 1,
+      "setup_plies": 3,
+      "expected_suspect_plies": [
+        17
+      ],
+      "expected_reason": "teacher-win-to-loss",
+      "basis": "manual-review-assisted-by-prior-teacher",
+      "teacher_required": true,
+      "rationale": "已见开发棋例；标签依据人工复核和先前教师证据，不是独立手工数学真值，不计入硬真值准确率。"
+    },
+    {
+      "id": "development-game-45",
+      "moves": [
+        "H8",
+        "I8",
+        "I9",
+        "H9",
+        "J7",
+        "J10",
+        "I7",
+        "K7",
+        "J6",
+        "G9",
+        "J8",
+        "J5",
+        "H6",
+        "K9",
+        "K6",
+        "G6",
+        "K5",
+        "L4",
+        "G8",
+        "I11",
+        "H12",
+        "H10",
+        "F8",
+        "G7",
+        "K10",
+        "L6",
+        "E8",
+        "D8",
+        "H7",
+        "L7",
+        "L8",
+        "J12",
+        "K13",
+        "L3",
+        "L5",
+        "E10",
+        "K8",
+        "L9",
+        "H5",
+        "H4",
+        "G5",
+        "F4",
+        "E5",
+        "F5",
+        "G4",
+        "I6",
+        "E7",
+        "E9",
+        "D10",
+        "J11",
+        "J9",
+        "F10",
+        "G11",
+        "G10",
+        "I10",
+        "F11",
+        "E12",
+        "D9",
+        "F9",
+        "C8",
+        "B7",
+        "G12"
+      ],
+      "aiColor": 1,
+      "setup_plies": 5,
+      "expected_suspect_plies": [
+        19
+      ],
+      "expected_reason": "teacher-win-to-loss",
+      "basis": "manual-review-assisted-by-prior-teacher",
+      "teacher_required": true,
+      "rationale": "已见开发棋例；标签依据人工复核和先前教师证据，不是独立手工数学真值，不计入硬真值准确率。"
+    },
+    {
+      "id": "development-game-32",
+      "moves": [
+        "H8",
+        "H9",
+        "H7",
+        "H6",
+        "G8",
+        "F8",
+        "G7",
+        "G9",
+        "I9",
+        "J10",
+        "I7",
+        "F7",
+        "I6",
+        "J5",
+        "I8",
+        "I5",
+        "I10"
+      ],
+      "aiColor": 2,
+      "setup_plies": 3,
+      "expected_suspect_plies": [],
+      "expected_reason": null,
+      "basis": "manual-review-assisted-by-prior-teacher",
+      "teacher_required": true,
+      "rationale": "已见开发棋例；标签依据人工复核和先前教师证据，不是独立手工数学真值，不计入硬真值准确率。"
+    }
+  ]
+}

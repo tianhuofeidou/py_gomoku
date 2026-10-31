@@ -4,7 +4,7 @@
 设计约束（来自项目规范）：
 
 - **不另造选点或判胜**：重赛复用 ``service.ai_move``，判胜复用 ``game.check_win``，
-  对称归一化复用 ``memory.canon_key``，复盘复用 ``tools.review.review_game``。
+  对称归一化复用 ``memory.canon_key``，离线定位使用 ``tools.loss_review``。
 - **不把"最后一手/对方成五点/首次全候选必败"直接当败手**：定位只产出"疑似节点 + 理由"，
   定位不出时如实返回空列表并给出 ``undetermined`` 原因，允许人工指定手数。
 - **五态只描述有限搜索**：任何结论都带 ``bounded=True``，不得表述为全局证明。
@@ -313,95 +313,53 @@ def _our_ply_indices(moves, ai_color):
     return [i for i, m in enumerate(moves) if m['player'] == ai_color]
 
 
-def locate_suspects(case, *, start_ply=6, max_suspects=5, engine_factory=None):
-    """定位疑似关键败手。
+def locate_suspects(case, *, start_ply=None, max_suspects=5, engine_factory=None,
+                    teacher=None, nodes=(200000, 1000000, 4000000), shortlist=3):
+    """规则/离线教师定位，保留原来的二元返回接口。
 
-    **不**把"最后一手""对方成五点""首次全候选必败"直接当败手，而是按以下优先级收集：
-
-    1. ``missed-five``：漏掉直接成五，或漏掉必须堵的五；
-    2. ``missed-save``：实际着法被判必败，而同时存在未判必败的其它候选；
-    3. ``deterioration``：局面明显恶化之前的本方着法
-       （用"实际着法档位"首次变成必败的前一个本方回合）。
-
-    返回 ``(suspects, undetermined_reason)``。定位不到时 suspects 为 []，
-    reason 说明为什么（例如局面为空、引擎不可用、全程未出现必败信号）。
+    默认只扫描真实成五与漏堵事实；启用教师时比较同层实际/替代子局面，
+    跨预算稳定胜转败才作为搜索嫌疑。未知不称可守，不再猜首次硬败的前一步。
+    start_ply显式传入时仍表示跳过前N手；缺省使用预置手元数据。
+    engine_factory为旧调用参数；新诊断不实例化本方引擎。
     """
-    moves = case.get('moves') or []
-    ai_color = case.get('aiColor')
-    if not moves or ai_color not in (BLACK, WHITE):
-        return [], 'no-moves'
-    if not any(m['player'] == ai_color for m in moves):
-        return [], 'ai-never-moved'
-
     try:
-        from gomoku.tools.review import review_game
-    except Exception as e:            # 可见地报告，不静默
-        return [], 'review-unavailable: %s' % e
+        from gomoku.tools.loss_review import review_case
+    except ModuleNotFoundError as error:
+        if error.name == 'gomoku.tools.loss_review':
+            return [], 'offline-review-unavailable: 本平台未附带离线诊断工具'
+        raise
+    result = review_case(case, start_ply=start_ply, max_suspects=max_suspects,
+                         teacher=teacher, nodes=nodes, shortlist=shortlist)
+    return result['suspects'], result['undetermined']
 
-    game = {'moves': moves, 'a_white': (ai_color == WHITE)}
-    try:
-        rows, first_all_lost, missed = review_game(game, side='a', start_ply=start_ply)
-    except Exception as e:
-        return [], 'review-failed: %s' % e
 
-    by_ply = {r['ply']: r for r in rows}
-    suspects = []
+def save_diagnosis(case, diagnosis, store=None):
+    """长任务完成后重新读库并核对案例；保留并发更新，不复活已删除案例。
 
-    # 优先级 1：漏五类
-    from gomoku.core.deep_search import DeepSearch
-    lose = DeepSearch.STATE_LOSE
-    win = DeepSearch.STATE_WIN
-
-    for ply, row in sorted(by_ply.items()):
-        states = (row.get('cand_states') or '').split('/')
-        if row.get('top_state') == '必胜' and row.get('played_state') != '必胜':
-            suspects.append({
-                'ply': ply, 'move': row['move'], 'reason': 'missed-five',
-                'detail': '引擎首选为必胜着法（%s），实际走了 %s' % (row['top'], row['move']),
-                'top': row['top'], 'playedState': row.get('played_state'),
-            })
-
-    # 优先级 2：漏掉可守的候选
-    if missed:
-        ply, save_move, played = missed
-        suspects.append({
-            'ply': ply, 'move': played, 'reason': 'missed-save',
-            'detail': '实际着法判必败，但存在未判必败的候选 %s' % save_move,
-            'save': save_move,
-        })
-
-    # 优先级 3：恶化之前的本方着法
-    first_bad = None
-    for ply, row in sorted(by_ply.items()):
-        if row.get('played_state') == '必败':
-            first_bad = ply
-            break
-    if first_bad is not None:
-        plies = sorted(by_ply)
-        idx = plies.index(first_bad)
-        if idx > 0:
-            prev = plies[idx - 1]
-            if not any(s['ply'] == prev for s in suspects):
-                suspects.append({
-                    'ply': prev, 'move': by_ply[prev]['move'], 'reason': 'deterioration',
-                    'detail': '下一手（第 %d 手）实际着法已判必败，本手是恶化前最后一次本方落子' % first_bad,
-                })
-
-    # 去重 + 限流，保留最先出现的（手数早的）
-    seen = set()
-    uniq = []
-    for s in sorted(suspects, key=lambda x: x['ply']):
-        if s['ply'] in seen:
-            continue
-        seen.add(s['ply'])
-        uniq.append(s)
-    uniq = uniq[:max_suspects]
-
-    if uniq:
-        return uniq, None
-    if first_all_lost:
-        return [], 'only-all-lost-at-%d' % first_all_lost
-    return [], 'no-signal'
+    部分/失败诊断只保存证据，不替换既有人工/自动锚点。新锚点需要新复测批次；
+    原批次和逐手复测历史仍保留为历史，迟到的旧批次不能将案例重新置为通过。
+    """
+    import copy
+    from gomoku.tools.loss_review import input_key
+    data = store if store is not None else load_store()
+    current = next((c for c in data['cases'] if c.get('id') == case.get('id')), None)
+    if (current is None or current.get('updatedAt') != case.get('updatedAt')
+            or input_key(current) != diagnosis.get('input_key')
+            or input_key(case) != diagnosis.get('input_key')):
+        raise ValueError('案例在分析期间已更新或删除；诊断保留在独立报告，未写回')
+    current['diagnosis'] = copy.deepcopy(diagnosis)
+    if diagnosis.get('status') == 'complete':
+        new = diagnosis['suspects']
+        if current.get('suspects') != new or current.get('manualPly') is not None:
+            current['diagnosis']['priorRetestBatch'] = copy.deepcopy(current.get('retestBatch'))
+            current['retestBatch'] = None
+            current['status'] = 'pending'
+        current['suspects'] = copy.deepcopy(new)
+        current['suspectsUndetermined'] = diagnosis.get('undetermined')
+        current['manualPly'] = None
+    current['updatedAt'] = int(time.time() * 1000)
+    save_store(data)
+    return current
 
 
 def set_suspects(case, suspects=None, undetermined=None, manual_ply=None, store=None):

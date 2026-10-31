@@ -35,7 +35,7 @@ class StepQualityTest(unittest.TestCase):
     def test_weighted_average(self):
         ds = Engine().deep_search
         self.assertAlmostEqual(ds._weighted_average([(1.0, 800), (0.6, 900)]),
-                               800 + 0.6 * 900)
+                               (800 + 0.6 * 900) / 1.6)
         self.assertEqual(ds._weighted_average([]), 0.0)
 
     def test_prune_branches(self):

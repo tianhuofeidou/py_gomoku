@@ -13,9 +13,12 @@
     archive   把已通过的案例移入归档
 """
 import argparse
+import copy
 import json
 import os
 import sys
+from pathlib import Path
+from uuid import uuid4
 
 from gomoku import loss_book as lb
 
@@ -94,6 +97,7 @@ def cmd_import(args):
             moves, ai_color, winner=winner, kind=kind,
             source='match-import', source_detail=args.json,
             config={'a_side': ai_side, 'opening': g.get('opening'),
+                    'opening_plies': len(g.get('opening_moves') or []),
                     'win_by': win_by or None},
         )
         by_kind[kind] = by_kind.get(kind, 0) + 1
@@ -114,23 +118,60 @@ def cmd_locate(args):
     if target is None:
         return 1
     if args.ply is not None:
+        # 先验证再保存；不能把越界人工手数写入用户存档。
+        lb.retest_starts(target, manual_ply=args.ply)
         suspects, undet = [], None
         case = lb.set_suspects(target, suspects=suspects, undetermined=None,
                                manual_ply=args.ply)
         print('已人工指定：本方第 %d 手' % args.ply)
         print('  重赛起点：', [s['startPly'] for s in lb.retest_starts(case, manual_ply=args.ply)])
         return 0
-    suspects, undet = lb.locate_suspects(target)
-    case = lb.set_suspects(target, suspects=suspects, undetermined=undet)
+    from gomoku.tools.loss_review import RapfiReviewer, review_case, write_json
+    from gomoku import paths
+    target = copy.deepcopy(target)
+    teacher = None
+    try:
+        if args.cache_only and not args.teacher:
+            raise ValueError('--cache-only需要--teacher以核验教师身份')
+        if args.teacher:
+            teacher = RapfiReviewer(args.teacher,
+                args.cache_dir or Path(paths.base_dir()) / 'loss-review-cache',
+                seconds=args.seconds, workers=args.workers,
+                max_queries=args.max_queries, cache_only=args.cache_only)
+            teacher.__enter__()
+        result = review_case(target, teacher=teacher, nodes=args.nodes,
+                             shortlist=args.shortlist, start_ply=args.start_ply)
+    finally:
+        if teacher is not None:
+            teacher.close()
+    report_path = Path(args.report) if args.report else Path(paths.base_dir()) / 'loss-review-reports' / (uuid4().hex + '.json')
+    write_json(report_path, result)
+    print('诊断：%s，状态=%s；报告=%s' % (result['backend'], result['status'], report_path))
+    for note in result.get('notes', []):
+        print('说明：' + note)
+    if not args.teacher:
+        print('仅规则扫描，未使用教师；未发现即时战术错误不等于没有败手。')
+    if result['status'] == 'invalid':
+        print('无法诊断：' + result['undetermined'])
+        return 1
+    if not args.dry_run:
+        lb.save_diagnosis(target, result)
+    suspects, undet = result['suspects'], result['undetermined']
+    case = dict(target, suspects=suspects, manualPly=None)
     if suspects:
         print('疑似关键败手（共 %d 个）：' % len(suspects))
         for s in suspects:
-            print('  第 %-3d 手 %-4s  %-14s  %s' % (s['ply'], s['move'], s['reason'], s['detail']))
-        print('\n重赛起点（1 基手数）：', [x['startPly'] for x in lb.retest_starts(case)])
+            print('  总谱第 %-3d 手（本方第%d手） %-4s  %-14s  %s' % (
+                s['ply'], s['ownPly'], s['move'], s['reason'], s['detail']))
+        label = ('建议起点（本次未写回锚点）' if args.dry_run or result['status'] != 'complete'
+                 else '重赛起点（总谱1基手数）')
+        print('\n%s：' % label, [x['startPly'] for x in lb.retest_starts(case)])
     else:
         print('无法明确定位，原因：%s' % undet)
         print('可用 --ply N 人工指定"本方第 N 次落子"后重赛。')
-    return 0
+    if result['warnings']:
+        print('拒绝%d条不合法教师PV（详见报告）；未作全盘证明。' % len(result['warnings']))
+    return 2 if result['status'] == 'partial' else (1 if result['status'] == 'error' else 0)
 
 
 def cmd_retest(args):
@@ -198,6 +239,10 @@ def cmd_show(args):
         print('\n未定位：%s' % c['suspectsUndetermined'])
     if c.get('manualPly'):
         print('人工指定：本方第 %d 手' % c['manualPly'])
+    if c.get('diagnosis'):
+        result = c['diagnosis']
+        print('上次离线诊断：%s/%s，扫描%d个本方回合；不是实战棋力证明' % (
+            result['backend'], result['status'], len(result['rows'])))
     if c.get('retests'):
         print('\n复测记录（%d 条）：' % len(c['retests']))
         for r in c['retests']:
@@ -251,6 +296,18 @@ def main(argv=None):
     p = sub.add_parser('locate', help='定位疑似关键败手')
     p.add_argument('--id', default=None)
     p.add_argument('--ply', type=int, default=None, help='人工指定：本方第 N 次落子')
+    p.add_argument('--teacher', help='现有Rapfi可执行文件；缺省仅做规则检查')
+    p.add_argument('--cache-dir', help='教师原始缓存目录')
+    p.add_argument('--cache-only', action='store_true', help='仅复用身份匹配缓存，缺项不启动教师')
+    p.add_argument('--nodes', type=lambda s: tuple(int(x) for x in s.split(',')),
+                   default=(200000, 1000000, 4000000), help='递增节点上限，逗号分隔')
+    p.add_argument('--shortlist', type=int, default=3, help='粗筛后加深的嫌疑数')
+    p.add_argument('--start-ply', type=int, help='显式跳过前N手；默认取预置手元数据，无元数据不跳过')
+    p.add_argument('--workers', type=int, choices=range(1, 5), default=4)
+    p.add_argument('--seconds', type=float, default=600, help='教师总时长预算秒数')
+    p.add_argument('--max-queries', type=int, default=2000, help='本轮共享新查询上限')
+    p.add_argument('--report', help='独立JSON诊断报告路径')
+    p.add_argument('--dry-run', action='store_true', help='生成报告但不写回败局库')
     p.set_defaults(func=cmd_locate)
 
     p = sub.add_parser('retest', help='在新版本上从附近节点重赛')
@@ -269,7 +326,11 @@ def main(argv=None):
     p.set_defaults(func=cmd_archive)
 
     args = ap.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (ValueError, OSError, RuntimeError) as error:
+        print('错误：%s' % error, file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':

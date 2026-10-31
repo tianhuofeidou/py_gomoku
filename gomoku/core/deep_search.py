@@ -5,7 +5,7 @@
 # 核心机制：
 #   - 温度银行：每个根候选从 T0 开始，沿每条路径按候选权重扣温
 #       DT = DT_M*((100-w)/100)^DT_POW + DT_N（权重高→耗温少）
-#       每轮双方模拟落子后检查温度，耗尽则评估当前叶子
+#       当前必杀/防守候选免耗温；普通步不因落子后产生新威胁而免温或绕过截断
 #   - 一层 = 本方+对方一个完整回合；候选与分数保留路径权重回溯，
 #     胜败状态另按双方最优选择汇总，不将分数汇总误当成胜败证明
 #   - 叶子评估：实际成五终局 ±1000；僵持叶子读当前棋盘两张状态表，
@@ -145,6 +145,26 @@ class DeepSearch:
         幂函数让 100 与 80 差异小、80 与 60 差异明显，形状由 DT_POW 控制。"""
         x = max(100.0 - float(w), 0.0) / 100.0
         return DeepSearch.DT_M * (x ** DeepSearch.DT_POW) + DeepSearch.DT_N
+
+    def _has_kill_points(self, board):
+        """全盘原始必杀档存在性，仅供局面诊断，不决定当前步骤免耗温。
+
+        状态表描述该空点再落一子后的棋型：模拟盘面的活三可对应活四点，
+        冲四可对应成五点。必须使用 on_move 更新后的表，并排除已占格。
+        不复用实验 fatal 特征（它包含 5~12 档），也不把权重 100 当触发条件。
+        """
+        return any(cell == EMPTY and (0 <= black <= 4 or 0 <= white <= 4)
+                   for row, black_row, white_row in zip(board, self.search.sb, self.search.sw)
+                   for cell, black, white in zip(row, black_row, white_row))
+
+    def _tactical_points(self, board, player):
+        """落子前按当前攻防优先级取得必杀/防守候选，复用四三反四过滤。"""
+        _reason, points = self.search.tactical_candidates(board, player)
+        return points
+
+    def _temperature_cost(self, weight, is_tactical):
+        """只有落子前属于当前战术候选的实际走法免费；不看落子后的潜力。"""
+        return 0.0 if is_tactical else self._dt(weight)
 
     @staticmethod
     def _step_quality(w, cand_ws):
@@ -298,10 +318,14 @@ class DeepSearch:
 
     @staticmethod
     def _weighted_average(items):
-        """按路径权重累加（不归一化）：items = [(w, value), ...]。
-        权重 = 路径质量连乘（全程最优 → 1.0），走差分支贡献按 W 缩水；
-        深层 W 连乘趋近 0 → 贡献自然衰减，无需除以 ΣW。"""
-        return sum(w * v for w, v in items)
+        """对本层保留分支作加权均值，避免分叉较多时放大分数绝对值。
+        绝对路径权重仍供剪枝使用；分数回传只保留本层相对权重。
+        先归一权重再相乘，保留离线记录器的标量表达式，不强转成 float。"""
+        items = list(items)
+        total = sum(w for w, _v in items)
+        if total <= 0:
+            return 0.0
+        return sum((w / total) * v for w, v in items)
 
     def _prune_branches(self, branches):
         """分支剪枝：branches = [(abs_weight, ...)]，绝对路径权重低于 PRUNE_W 剔除；
@@ -512,7 +536,7 @@ class DeepSearch:
         plies：当前分支已落子数（0=根层），用于「越深越窄」：
           回合数 = plies//2；>= NARROW_ROUNDS → 最多 CAND_N_MID 个；
           >= HARD_NARROW_ROUNDS → 最多 CAND_N_DEEP 个。
-        返回 [(r, c, w), ...]。权重同时用于温度分配与叶子过程分。"""
+        返回 [(r, c, w), ...]。权重用于温度分配与分支质量权重，不直接加进叶子分。"""
         rounds = plies // 2
         if rounds >= self.HARD_NARROW_ROUNDS:
             n = min(n, self.CAND_N_DEEP)
@@ -582,7 +606,9 @@ class DeepSearch:
 
     def _recursive_impl(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0, path_w=1.0):
         """递归推演：player 落一子（候选）→ opp 应一手 → 递归下一层。
-        一层 = 双方完整回合；回合后温度耗尽则进行叶子评估。
+        常规按双方完整回合推进；普通叶子只在本方落子后评估。
+        仅落子前属于当前战术候选的实际走法免温；不以落子后的潜力追溯免温。
+        零/负温度只承接当前战术步及应手；普通步落完后截断，实际成五优先终局。
         模拟落子后同步更新状态表（journal 哈希表回滚），保证候选点/必杀检测
         基于当前分支的真实棋盘，而不是进入深推前的过期状态表。
         ctx_branch 与 branch 同步记录每步上下文，供神经网络分支矩阵使用。
@@ -613,9 +639,11 @@ class DeepSearch:
         cand_wins = []                       # 子子树 main 视角必胜判定节点数
         cand_losses = []
         cand_totals = []                     # 子分支全部节点数（含未判定）
+        tactical_points = self._tactical_points(board, player)
         for (q, r, c, w) in kept:
             if board[r][c] != EMPTY:
                 continue
+            is_tactical = (r, c) in tactical_points
             ctx = self._make_ctx(board, player, main_player, w, cand_ws,
                                  cand_pts=cands, temp=temp, depth=len(branch))
             board[r][c] = player
@@ -623,6 +651,9 @@ class DeepSearch:
             ctx_branch.append(ctx)
             j_w = {}
             self.search.on_move(board, r, c, player, journal=j_w, record_history=False)
+            temp_after = temp - self._temperature_cost(w, is_tactical)
+            # 只承接当前已成立的战术步；普通步不能靠落子后新威胁越过截断。
+            continue_tactical = is_tactical and bool(self._tactical_points(board, opp))
             if trace:
                 print('  ' * indent + '+- %s落%s%d w=%g t=%g' % (
                     'W' if player == WHITE else 'B', 'ABCDEFGHIJKLMNO'[c], r + 1, w, temp))
@@ -636,6 +667,15 @@ class DeepSearch:
                 c_total = 1              # 该候选子节点本身
                 if trace:
                     print('  ' * indent + '   -> WIN %g' % score)
+            elif temp_after <= 0 and not continue_tactical:
+                # 当前非战术步或战术已解除时按温度停止，不允许免费重新起攻。
+                ctx['fatal'] = 1 if self._has_forcing_threat(player) else 0
+                score = self._leaf_score(board, branch, 'stale', player, ctx_branch)
+                branch_state = new_branch_state = 0
+                cw = cl = 0
+                c_total = 1
+                if trace:
+                    print('  ' * indent + '   -> 本方落子后温度尽 leaf=%g' % score)
             else:
                 # 仅保留实验上下文特征，不作为胜败种子的门槛。
                 ctx['fatal'] = 1 if self._has_forcing_threat(player) else 0
@@ -648,6 +688,7 @@ class DeepSearch:
                     cw = cl = 0
                     c_total = 1          # 该候选子节点本身（无应手）
                 else:
+                    opp_tactical_points = self._tactical_points(board, opp)
                     opp_cand_ws = [x[2] for x in opp_pts]
                     # 对方应手分支：绝对路径权重 = path_w × q × oq（连乘衰减）
                     opp_raw = []
@@ -664,7 +705,8 @@ class DeepSearch:
                     for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
-                        temp2 = temp - self._dt(w) - self._dt(ow)
+                        opp_is_tactical = (or_, oc) in opp_tactical_points
+                        temp2 = temp_after - self._temperature_cost(ow, opp_is_tactical)
                         ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
                                                cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         board[or_][oc] = opp
@@ -683,13 +725,8 @@ class DeepSearch:
                             c_total += 1      # 对方应手子节点
                             if trace:
                                 print('  ' * indent + '   -> B应%s%d LOSE %g' % ('ABCDEFGHIJKLMNO'[oc], or_ + 1, child))
-                        elif temp2 <= 0:
-                            child = self._leaf_score(board, branch, 'stale', player, ctx_branch)
-                            opp_states.append(0)
-                            c_total += 1      # 对方应手子节点（未判定）
-                            if trace:
-                                print('  ' * indent + '   -> 温度尽(t=%g<dt=%g) leaf=%g' % (temp2 + self._dt(w), self._dt(w), child))
                         else:
+                            # 耗温后仍补本方一步；若必杀档持续则继续免费攻防，不重置温度。
                             child, st, cw2, cl2, ct2, new_st, next_states = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, indent + 1, path_w=path_w * q * oq)
                             opp_states.append(-st)   # 递归返回 player 视角 → 投影到 opp 视角
                             grandchild_states.extend(next_states)
@@ -830,6 +867,7 @@ class DeepSearch:
         opp = 3 - player
         main_player = player
         results = []
+        tactical_points = self._tactical_points(board, player)
         for (r, c) in cands:
             if context is not None:
                 context['root'] = (r, c)
@@ -838,6 +876,7 @@ class DeepSearch:
             w = points.get((r, c), 60.0) if isinstance(points, dict) else 60.0
             root_cands = self._candidate_points(board, player, 5)
             cand_ws = [x[2] for x in root_cands]
+            is_tactical = (r, c) in tactical_points
             ctx = self._make_ctx(board, player, main_player, w, cand_ws,
                                  cand_pts=root_cands, temp=t0, depth=0)
             board[r][c] = player
@@ -845,6 +884,8 @@ class DeepSearch:
             ctx_branch = [ctx]
             j_w = {}
             self.search.on_move(board, r, c, player, journal=j_w, record_history=False)
+            temp_after = t0 - self._temperature_cost(w, is_tactical)
+            continue_tactical = is_tactical and bool(self._tactical_points(board, opp))
             if trace:
                 print('== cand: %s%d w=%g' % ('ABCDEFGHIJKLMNO'[c], r + 1, w))
             if self._check_win(board, r, c, player):
@@ -856,6 +897,13 @@ class DeepSearch:
                 c_total = 1              # 该候选根子节点本身
                 if trace:
                     print('   -> direct WIN %g' % val)
+            elif temp_after <= 0 and not continue_tactical:
+                # 仅当前战术步可在零/负温度下承接应手，普通步照常截断。
+                ctx['fatal'] = 1 if self._has_forcing_threat(player) else 0
+                val = self._leaf_score(board, branch, 'stale', player, ctx_branch)
+                root_state = new_root_state = 0
+                cw = cl = 0
+                c_total = 1
             else:
                 # 仅保留实验上下文特征，不作为胜败种子的门槛。
                 ctx['fatal'] = 1 if self._has_forcing_threat(player) else 0
@@ -868,8 +916,9 @@ class DeepSearch:
                     cw = cl = 0
                     c_total = 1          # 该候选根子节点本身（无应手）
                 else:
+                    opp_tactical_points = self._tactical_points(board, opp)
                     opp_cand_ws = [x[2] for x in opp_pts]
-                    # 对方应手分支：按路径质量权重剪枝 + 加权求和（替代 min）
+                    # 对方应手分支：按路径质量权重剪枝 + 本层加权均值（不取 min）
                     opp_raw = []
                     for (or_, oc, ow) in opp_pts:
                         oq = self._step_quality(ow, opp_cand_ws)
@@ -884,7 +933,8 @@ class DeepSearch:
                     for (oq, or_, oc, ow) in opp_kept:
                         if board[or_][oc] != EMPTY:
                             continue
-                        temp2 = t0 - self._dt(w) - self._dt(ow)
+                        opp_is_tactical = (or_, oc) in opp_tactical_points
+                        temp2 = temp_after - self._temperature_cost(ow, opp_is_tactical)
                         ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
                                                cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         board[or_][oc] = opp
@@ -902,11 +952,8 @@ class DeepSearch:
                             c_total += 1                  # 对方应手子节点
                             if trace:
                                 print('   -> B resp %s%d LOSE %g' % ('ABCDEFGHIJKLMNO'[oc], or_ + 1, child))
-                        elif temp2 <= 0:
-                            child = self._leaf_score(board, branch, 'stale', player, ctx_branch)
-                            opp_states.append(0)
-                            c_total += 1                  # 对方应手子节点（未判定）
                         else:
+                            # 不在对方刚走完时评分；必杀档持续则续推，安静后按剩余温度截断。
                             child, st, cw2, cl2, ct2, new_st, next_states = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, 1)
                             opp_states.append(-st)   # 递归返回 player 视角 → 投影到 opp 视角
                             grandchild_states.extend(next_states)

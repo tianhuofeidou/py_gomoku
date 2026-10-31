@@ -106,7 +106,8 @@ class StateBackpropTest(unittest.TestCase):
         for player, all_lose in itertools.product((BLACK, WHITE), (False, True)):
             engine = Engine()
             deep = engine.deep_search
-            deep.T0 = 1.0
+            # 安静根步耗温 3；留出对方应手，才能检验硬败排序和全败兜底。
+            deep.T0 = 4.0
             board = empty_board()
             roots = {(7, 7): 100.0, (7, 9): 100.0}
             def candidates(b, turn, n=5, plies=0):

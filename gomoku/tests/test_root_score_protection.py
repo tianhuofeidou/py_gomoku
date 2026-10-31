@@ -12,7 +12,8 @@ class RootScoreProtectionTest(unittest.TestCase):
     def run_tree(self, player=BLACK, all_lose=False, complete=False, factor=1., engine=None):
         engine = Engine() if engine is None else engine
         deep = engine.deep_search
-        deep.T0 = 1.
+        # 安静根步耗温3，留出对方应手来覆盖硬败筛选与完整补分。
+        deep.T0 = 4.
         board = empty_board()
         roots = {(7, 7): 100., (7, 9): 100.}
         before = copy.deepcopy((board, engine.search.sb, engine.search.sw,
@@ -27,9 +28,11 @@ class RootScoreProtectionTest(unittest.TestCase):
 
         def leaf(b, branch, status, turn, contexts):
             if all_lose:
-                # 仅看首个已证明的败路会选左边；完整累计分应选右边。
-                return factor * ((-5. if b[7][7] else -20.) if status == 'lose'
-                                 else (-100. if b[7][7] else 100.))
+                # 补本方一步可能占据另一个根点，根身份必须取分支首步。
+                # 仅看首个败路会选左边；完整加权均值应选右边。
+                is_left = branch[0][:2] == (7, 7)
+                return factor * ((-5. if is_left else -20.) if status == 'lose'
+                                 else (-100. if is_left else 100.))
             return factor * (999. if status == 'lose' else -10.)
 
         with patch.object(deep, '_candidate_points', side_effect=candidates), \
@@ -51,7 +54,7 @@ class RootScoreProtectionTest(unittest.TestCase):
         for player in (BLACK, WHITE):
             rows, calls = self.run_tree(player)
             self.assertEqual((rows[0]['r'], rows[0]['c']), (7, 7))
-            self.assertEqual(rows[0]['score'], -20.)
+            self.assertEqual(rows[0]['score'], -10.)
             self.assertTrue(rows[0]['score_complete'])
             self.assertEqual(rows[1]['state'], -1)
             self.assertIsNone(rows[1]['score'])
@@ -64,8 +67,8 @@ class RootScoreProtectionTest(unittest.TestCase):
             full, _ = self.run_tree(player, all_lose=True, complete=True)
             self.assertEqual(rows, full)
             self.assertEqual((rows[0]['r'], rows[0]['c']), (7, 9))
-            self.assertEqual(rows[0]['score'], 80.)
-            self.assertEqual(rows[1]['score'], -105.)
+            self.assertEqual(rows[0]['score'], (-20. + 100.) / 2)
+            self.assertEqual(rows[1]['score'], (-5. - 100.) / 2)
             self.assertTrue(all(row['score_complete'] for row in rows))
             self.assertEqual(calls, 4)  # 补分复用第一阶段叶子，不重复执行叶子函数。
 
