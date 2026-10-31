@@ -20,6 +20,24 @@ from gomoku.tools import leaf_fit as F, training_jobs as J
 SCHEMA = 2
 
 
+def _say(text, flush=True):
+    """按当前 stdout 编码安全输出一行。
+
+    main() 会把 stdout 重配为 UTF-8；测试或库式调用绕过 main 时仍可能撞上
+    Windows 默认 cp1252 等窄编码，直接 print 中文会抛 UnicodeEncodeError。
+    这里在编码失败时降级为可显示字符，保证离线工具不因控制台编码中断。
+    """
+    stream = sys.stdout
+    line = text + '\n'
+    try:
+        stream.write(line)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, 'encoding', None) or 'ascii'
+        stream.write(line.encode(encoding, 'replace').decode(encoding))
+    if flush:
+        stream.flush()
+
+
 def fingerprint():
     return T.digest([U.source_fingerprint(), {p.name: hashlib.sha256(
         p.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
@@ -530,7 +548,7 @@ def boundary_phase(corpus,checkpoint,phase,args,out,baseline):
             event['selection_choice_changes_from_origin']=sum(a!=b for a,b in zip(original_selection,selected))
             event['selection_positive_evidence']=metrics['selection_regret']<before['selection_regret']-1e-9
             before=metrics
-            print(f'分界 {proposal["key"]} {proposal["kind"]} 差距={metrics["regret"]:.6f} 接受=True',flush=True)
+            _say(f'分界 {proposal["key"]} {proposal["kind"]} 差距={metrics["regret"]:.6f} 接受=True')
         checkpoint['history'].append(event)
         save(out,checkpoint)
     checkpoint['candidate_train_compute']=corpus.verify(checkpoint['params'],'train')
