@@ -215,6 +215,38 @@ class ZeroCostContinuationTest(unittest.TestCase):
                 self.assertEqual(leaves, [(2, result)])
                 self.assertEqual(snapshot(board, search), before)
 
+    def test_replay_position_after_l9_stops_before_black_j8(self):
+        """历史 95 层链的第 40 手后，黑方无 reason 时不得补走 J8。"""
+        board, search = position(
+            'H8 G8 G7 H7 I6 F9 F6 E5 H6 G6 I5 J4 I7 I8 '
+            'F5 F4 K5 J6 H5 L5 J5 G5 I4 I3 H3 G2 G3 G4 H4 '
+            'H2 K6 L7 K8 K4 F2 E1 K9 K7 J7 L9'
+        )
+        deep = DeepSearch(search)
+        before = snapshot(board, search)
+        original_leaf = deep._leaf_score
+        leaf_calls = []
+
+        def observe(b, branch, status, player, ctx_branch=None):
+            leaf_calls.append((status, player, tuple(branch)))
+            return original_leaf(b, branch, status, player, ctx_branch)
+
+        with patch.object(deep, '_candidate_points',
+                          side_effect=AssertionError('黑方无 reason 时不得生成 J8 普通候选')), \
+             patch.object(deep, '_leaf_score', side_effect=observe):
+            reason, points = deep._tactical_result(board, BLACK)
+            self.assertIsNone(reason)
+            self.assertEqual(points, {})
+            value = deep._recursive(
+                board, BLACK, WHITE, BLACK, -1.0, [], [], {}
+            )
+
+        self.assertEqual(len(leaf_calls), 1)
+        self.assertEqual(leaf_calls[0][0:2], ('stale', BLACK))
+        self.assertEqual(value[4], 1)
+        self.assertEqual(board[7][9], EMPTY, 'J8 不得被错误补出')
+        self.assertEqual(snapshot(board, search), before)
+
     def test_actual_five_precedes_next_turn_and_negative_budget(self):
         for side in (BLACK, WHITE):
             for stage in ('root', 'recursive'):
@@ -260,9 +292,9 @@ class ZeroCostContinuationTest(unittest.TestCase):
                 self.assertEqual(deep._resume_temperature(node, 3-side, -7.0,
                                                          before_move=phase), -7.0)
                 self.assertAlmostEqual(deep._resume_temperature(node, side, -7.0,
-                                                               before_move=phase), 98.78)
+                                                               before_move=phase), 40.0)
                 self.assertAlmostEqual(deep._resume_temperature(node, side, 999.0,
-                                                               before_move=phase), 98.78)
+                                                               before_move=phase), 40.0)
         self.assertEqual(deep.cache_stats['frontier_resumes'], 4)
 
     def test_real_reroot_resumes_before_move_frontier_with_debt(self):
@@ -287,14 +319,17 @@ class ZeroCostContinuationTest(unittest.TestCase):
                     deep.advance_search_cache(board, r, c, p)
                 self.assertTrue(deep._tree_root['frontier']['before_move'])
                 self.assertEqual(deep._tree_root['frontier']['temperature'], debt)
+                # 当前策略对达到深度上限的旧叶子禁止续推，保留本测试对普通补步
+                # 禁止与状态回滚的覆盖范围。
+                deep._tree_root['frontier']['depth'] = deep.CONTINUE_DEPTH_STOP
                 before = snapshot(board, search)
                 with patch.object(search, 'on_move', side_effect=AssertionError('欠温未清不得补普通步')):
                     deep.rank_candidates(board, {B: 100.0}, side, complete_scores=True)
                     self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
-                    self.assertEqual(deep._tree_root['frontier']['temperature'], 160.0+debt)
+                    self.assertEqual(deep._tree_root['frontier']['temperature'], 0.0)
                     deep.rank_candidates(board, {B: 100.0}, side, complete_scores=True)
                     self.assertEqual(deep.cache_stats['frontier_resumes'], 0)
-                    self.assertEqual(deep._tree_root['frontier']['temperature'], 160.0+debt)
+                    self.assertEqual(deep._tree_root['frontier']['temperature'], 0.0)
                 self.assertEqual(snapshot(board, search), before)
 
 

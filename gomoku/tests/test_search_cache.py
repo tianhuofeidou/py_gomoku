@@ -3,7 +3,7 @@
 
 被测实现位于 gomoku/core/deep_search.py 与 gomoku/core/engine.py：
 `engine.on_move` 推进真实落子树，`engine.reset` 清空；缓存身份由类常量、search
-模块权重与方法对象决定；欠温末端按 T0 + min(0, 旧温度) 续算一次。
+模块权重与方法对象决定；旧叶子续推温度由欠温、权重、评分和深度共同计算。
 """
 import copy
 import os
@@ -12,7 +12,9 @@ import unittest
 from unittest.mock import patch
 
 from gomoku import memory
+from gomoku.core.deep_search import DeepSearch
 from gomoku.core.engine import Engine
+from gomoku.core.pattern import PatternAnalyzer
 from gomoku.core.search import Search
 from gomoku.core.utils import BLACK, WHITE, empty_board, place
 
@@ -208,10 +210,10 @@ class SearchCacheTest(unittest.TestCase):
             node = deep._new_tree_node(deep._position_key(board))
             node['frontier'] = dict(player=BLACK, temperature=-15.0,
                                     path_weight=1.0, epoch=0)
-            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0), 65.0)
+            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0), 40.0)
             self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
             # 同方同局重复调用：返回值复用，不重复拨温/计数。
-            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0), 65.0)
+            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0), 40.0)
             self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
             # 无旧末端、或旧末端不是同一方：保持本轮入口温度。
             empty_node = deep._new_tree_node(deep._position_key(board))
@@ -234,8 +236,7 @@ class SearchCacheTest(unittest.TestCase):
             left['frontier'] = dict(player=BLACK, temperature=-15.0,
                                     path_weight=1.0, epoch=0)
             deep._tree_epoch = 1
-            self.assertAlmostEqual(deep._resume_temperature(left, BLACK, 999.0), 65.0
-                                   if deep.T0 == 80.0 else deep.T0 - 15.0)
+            self.assertAlmostEqual(deep._resume_temperature(left, BLACK, 999.0), 23.0)
             self.assertEqual(deep._resume_temperature(right, BLACK, 123.0), 123.0)
             self.assertIsNot(left['resume_values'], right['resume_values'])
             # 聚合分数键包含入口温度/路径权重，不同路径不共用结果。
@@ -246,6 +247,51 @@ class SearchCacheTest(unittest.TestCase):
             self.assertNotEqual(a, c)
         finally:
             deep._reuse_active = False
+
+    def test_leaf_continuation_policy_uses_weight_score_depth_and_soft_states(self):
+        deep = DeepSearch(Search(PatternAnalyzer()))
+        # 关闭基础信用后，避免续推上限截平高分与普通叶子的差异。
+        deep._cache_credit = 0.0
+
+        def frontier(**kwargs):
+            data = dict(temperature=-15.0, path_weight=0.8, depth=4,
+                        score=0.0, state=0, terminal=False)
+            data.update(kwargs)
+            return data
+
+        normal, blocked = deep._continuation_temperature(frontier())
+        self.assertFalse(blocked)
+        high_score, _ = deep._continuation_temperature(frontier(score=900.0))
+        self.assertGreater(high_score, normal)
+        low_weight, low_weight_blocked = deep._continuation_temperature(
+            frontier(path_weight=deep.CONTINUE_W_MIN / 2))
+        self.assertTrue(low_weight_blocked)
+        self.assertEqual(low_weight, 0.0)
+        deep_leaf, deep_blocked = deep._continuation_temperature(
+            frontier(depth=deep.CONTINUE_DEPTH_STOP))
+        self.assertTrue(deep_blocked)
+        self.assertEqual(deep_leaf, 0.0)
+
+        soft_win, soft_win_blocked = deep._continuation_temperature(frontier(state=2))
+        soft_lose, soft_lose_blocked = deep._continuation_temperature(frontier(state=-2))
+        self.assertFalse(soft_win_blocked)
+        self.assertFalse(soft_lose_blocked)
+        self.assertEqual(soft_win, normal)
+        self.assertEqual(soft_lose, normal)
+        for hard_state in (1, -1):
+            value, hard_blocked = deep._continuation_temperature(frontier(state=hard_state))
+            self.assertTrue(hard_blocked)
+            self.assertEqual(value, 0.0)
+
+    def test_frontier_records_leaf_weight_depth_and_score(self):
+        deep = DeepSearch(Search(PatternAnalyzer()))
+        node = deep._new_tree_node(bytes(225))
+        deep._remember_frontier(node, BLACK, -12.0, 0.35,
+                                before_move=False, depth=7, score=625.0, state=-2)
+        self.assertEqual(node['frontier']['path_weight'], 0.35)
+        self.assertEqual(node['frontier']['depth'], 7)
+        self.assertEqual(node['frontier']['score'], 625.0)
+        self.assertEqual(node['frontier']['state'], -2)
 
     # ---------- 判态早停不能冒充完整评分 ----------
 
