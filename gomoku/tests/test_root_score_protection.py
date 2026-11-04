@@ -1,4 +1,4 @@
-"""硬态早停只能淘汰硬败；入选比较与全败兜底必须保持完整原始分。"""
+"""硬态±1000直接完成定分；未确定节点保留原加权分且不重复补算。"""
 import copy
 import json
 import unittest
@@ -12,7 +12,7 @@ class RootScoreProtectionTest(unittest.TestCase):
     def run_tree(self, player=BLACK, all_lose=False, complete=False, factor=1., engine=None):
         engine = Engine() if engine is None else engine
         deep = engine.deep_search
-        # 安静根步耗温3，留出对方应手来覆盖硬败筛选与完整补分。
+        # 安静根步耗温3，留出对方应手来覆盖硬败早停与未知分。
         deep.T0 = 4.
         board = empty_board()
         roots = {(7, 7): 100., (7, 9): 100.}
@@ -50,15 +50,15 @@ class RootScoreProtectionTest(unittest.TestCase):
         json.dumps(rows, allow_nan=False)
         return rows, score.call_count
 
-    def test_discarded_hard_loss_has_no_invented_score(self):
+    def test_proven_hard_loss_has_fixed_complete_score(self):
         for player in (BLACK, WHITE):
             rows, calls = self.run_tree(player)
             self.assertEqual((rows[0]['r'], rows[0]['c']), (7, 7))
             self.assertEqual(rows[0]['score'], -10.)
             self.assertTrue(rows[0]['score_complete'])
             self.assertEqual(rows[1]['state'], -1)
-            self.assertIsNone(rows[1]['score'])
-            self.assertFalse(rows[1]['score_complete'])
+            self.assertEqual(rows[1]['score'], -1000.)
+            self.assertTrue(rows[1]['score_complete'])
             self.assertEqual(calls, 3)  # 不为已淘汰的硬败展开第二个应手。
 
     def test_all_losing_fallback_restores_complete_scores_and_order(self):
@@ -66,17 +66,16 @@ class RootScoreProtectionTest(unittest.TestCase):
             rows, calls = self.run_tree(player, all_lose=True)
             full, _ = self.run_tree(player, all_lose=True, complete=True)
             self.assertEqual(rows, full)
-            self.assertEqual((rows[0]['r'], rows[0]['c']), (7, 9))
-            self.assertEqual(rows[0]['score'], (-20. + 100.) / 2)
-            self.assertEqual(rows[1]['score'], (-5. - 100.) / 2)
+            self.assertEqual((rows[0]['r'], rows[0]['c']), (7, 7))
+            self.assertEqual([row['score'] for row in rows], [-1000., -1000.])
             self.assertTrue(all(row['score_complete'] for row in rows))
-            self.assertEqual(calls, 4)  # 补分复用第一阶段叶子，不重复执行叶子函数。
+            self.assertEqual(calls, 2)  # 两个根各找到首个硬胜应手，均不展开另一个应手。
 
     def test_explicit_complete_scores_retains_numeric_consumers(self):
         rows, calls = self.run_tree(complete=True)
         self.assertTrue(all(row['score_complete'] for row in rows))
         self.assertTrue(all(isinstance(row['score'], float) for row in rows))
-        self.assertEqual(calls, 4)
+        self.assertEqual(calls, 3)
 
     def test_empty_or_occupied_candidates_release_pass(self):
         engine = Engine()
@@ -104,12 +103,12 @@ class RootScoreProtectionTest(unittest.TestCase):
 
     def test_pass_and_leaf_memos_do_not_leak_between_calls(self):
         engine = Engine()
-        left, _ = self.run_tree(all_lose=True, engine=engine)
-        right, _ = self.run_tree(all_lose=True, factor=2., engine=engine)
+        left, _ = self.run_tree(engine=engine)
+        right, _ = self.run_tree(factor=2., engine=engine)
         self.assertEqual(right[0]['score'], 2 * left[0]['score'])
 
-    def test_decision_network_requests_complete_scores(self):
-        engine = Engine(use_decision_net=True)
+    def test_explicit_complete_scores_request_is_preserved(self):
+        engine = Engine()
         board = empty_board()
         # 本方前三手现在由开局模块接管；完整评分契约在第四手及之后验证。
         for r, c, player in ((0, 0, BLACK), (14, 14, WHITE), (1, 2, BLACK),
@@ -118,11 +117,10 @@ class RootScoreProtectionTest(unittest.TestCase):
             engine.on_move(board, r, c, player)
         row = engine.deep_search._candidate_result(7, 7, 1.)
         with patch.object(engine.search, 'tactical_candidates', return_value=('', {})), \
-                patch.object(engine.search, '_fallback', return_value=[(7, 7, 80.), (7, 9, 70.)]), \
+                patch.object(engine.search, '_ordinary_candidates', return_value=[(7, 7, 80.), (7, 9, 70.)]), \
                 patch.object(engine, '_memory_bonus', return_value={}), \
-                patch.object(engine, '_decision_pick', return_value=(7, 7)), \
                 patch.object(engine.deep_search, 'rank_candidates', return_value=[row]) as rank:
-            engine.analyze_turn(board, BLACK)
+            engine.analyze_turn(board, BLACK, complete_scores=True)
         self.assertTrue(rank.call_args.kwargs['complete_scores'])
 
     def test_temperature_change_applies_to_next_decision(self):

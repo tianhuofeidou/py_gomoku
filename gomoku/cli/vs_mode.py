@@ -43,7 +43,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--black-params', default=None, help='黑方参数 JSON（ga_tune 输出格式）')
     ap.add_argument('--white-params', default=None, help='白方参数 JSON（ga_tune 输出格式）')
-    ap.add_argument('--t0', type=float, default=None, help='深推温度；不填则用参数里的 deep_t0，默认 40')
+    ap.add_argument('--t0', type=float, default=None, help='同时覆盖冷启动/续温；不传且无参数文件时保留正式160/120配置')
     ap.add_argument('--max-moves', type=int, default=60, help='最大步数')
     ap.add_argument('--no-dynamic', action='store_true', help='禁用动态攻防配比（双方固定 3攻2防）')
     ap.add_argument('--quiet', action='store_true', help='不逐手打印棋盘')
@@ -73,8 +73,14 @@ def main():
     for step in range(args.max_moves):
         params = black_params if turn == BLACK else white_params
         G.apply_params(params)
-        t0 = args.t0 if args.t0 is not None else params['deep_t0']
-        G.DeepSearch.T0 = t0
+        # 参数文件的温度属于显式实验；无覆盖时保持正式分段冷启动。
+        explicit = args.t0 if args.t0 is not None else (
+            params['deep_t0'] if (args.black_params if turn == BLACK else args.white_params) else None)
+        e.deep_search.T0 = G.DeepSearch.T0
+        e.deep_search.OPENING_COLD_T0 = G.DeepSearch.OPENING_COLD_T0
+        e.deep_search.MIDDLE_COLD_T0 = G.DeepSearch.MIDDLE_COLD_T0
+        if explicit is not None:
+            e.deep_search.T0 = e.deep_search.OPENING_COLD_T0 = e.deep_search.MIDDLE_COLD_T0 = float(explicit)
 
         res = e.analyze_turn(b, turn)
         move = res['part4_result']['move']

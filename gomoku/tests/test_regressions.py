@@ -37,7 +37,6 @@ class RegressionTest(unittest.TestCase):
     def board_engine(self, stones):
         board = empty_board()
         e = Engine()
-        e.deep_search.use_nn = False
         for r, c, p in stones:
             board[r][c] = p
             e.on_move(board, r, c, p)
@@ -59,16 +58,16 @@ class RegressionTest(unittest.TestCase):
         for p, row in ((BLACK, 7), (WHITE, 1)):
             self.assertTrue(all(r == row for r, c, w in e.deep_search._candidate_points(board, p)))
 
-    def test_recursive_defense_limits_points_and_preserves_weights(self):
+    def test_recursive_defense_preserves_all_points_and_weights_before_batching(self):
         board, e = self.board_engine([(7, c, BLACK) for c in (5, 6, 7)])
         reason, points = e.search.tactical_candidates(board, WHITE)
         self.assertEqual(reason, 'opp-vcf')
         self.assertEqual({(r, c): w for r, c, w in e.deep_search._candidate_points(board, WHITE, n=1)},
-                         dict(list(points.items())[:1]))
+                         points)
         points = {(0, c): 100.0 if c == 0 else 80.0 for c in range(8)}
         with patch.object(e.search, 'tactical_candidates', return_value=('opp-vcf', points)):
             self.assertEqual(e.deep_search._candidate_points(board, WHITE),
-                             [(r, c, w) for (r, c), w in list(points.items())[:5]])
+                             [(r, c, w) for (r, c), w in points.items()])
 
     def test_fallback_attack_defense_modes_are_symmetric(self):
         """黑白候选评分模式必须对称：进攻列表用 attack，防守列表用 defend。
@@ -303,14 +302,24 @@ class RegressionTest(unittest.TestCase):
                 once = json.loads(out.stdout)
                 self.assertEqual(once, {k: result[k] for k in ('row', 'col', 'ranked', 'net_used')})
 
-    def test_network_flag_and_model_path(self):
-        e = Engine(use_decision_net=True)
-        e.decision_net_used = True
-        ranked = [{'r': 2, 'c': 3, 'score': 4}]
-        self.assertEqual(e._decision_pick(empty_board(), WHITE, ranked), (2, 3))
-        self.assertFalse(e.decision_net_used)
-        self.assertTrue(Path(e.deep_search.model_path).is_absolute())
+    def test_removed_network_api(self):
+        e = Engine()
+        self.assertFalse(hasattr(e, 'use_decision_net'))
+        self.assertFalse(hasattr(e, '_decision_pick'))
+        self.assertFalse(hasattr(e.deep_search, 'use_nn'))
+        self.assertFalse(hasattr(e.deep_search, 'model_path'))
+        with self.assertRaises(TypeError):
+            Engine(use_decision_net=True)
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main()

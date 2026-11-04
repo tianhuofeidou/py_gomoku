@@ -38,8 +38,7 @@ TOP_FILES = (
 )
 
 # 桌面引擎中需要复制到 Android 的 core 文件。
-# 注意：gomoku/core/evaluate.py 被 .gitignore 排除，GitHub 干净检出不存在；
-# 移动端也不启用神经网络，因此不纳入同步清单。
+# 只同步纯算法运行所需模块；旧网络评估/训练骨架已移除。
 CORE_FILES = (
     '__init__.py',
     'utils.py',
@@ -49,7 +48,6 @@ CORE_FILES = (
     'opening_book.py',
     'opening_book_data.py',
     'engine.py',
-    'train.py',
 )
 
 # Android 端 tools/ga_tune.py 的占位实现。
@@ -119,9 +117,8 @@ def _module_level_internal_imports(py_path):
         m = re.match(r'from\s+gomoku\.(\w+)(?:\.(\w+))?\s+import\b', s)
         if m:
             pkg, mod = m.group(1), m.group(2)
-            # tools 与 nn 都不在 Android 同步范围：
-            #   tools/ 只有 ga_tune 占位；nn/ 是本地实验代码（被 .gitignore 排除）
-            if pkg in ('tools', 'nn'):
+            # tools/ 只有 ga_tune 占位；其他内部依赖必须在同步清单中。
+            if pkg == 'tools':
                 continue
             if mod:
                 out.add('%s/%s.py' % (pkg, mod))

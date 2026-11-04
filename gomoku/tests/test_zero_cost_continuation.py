@@ -326,13 +326,26 @@ class ZeroCostContinuationTest(unittest.TestCase):
                 with patch.object(search, 'on_move', side_effect=AssertionError('欠温未清不得补普通步')):
                     deep.rank_candidates(board, {B: 100.0}, side, complete_scores=True)
                     self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
-                    self.assertEqual(deep._tree_root['frontier']['temperature'], 0.0)
+                    self.assertEqual(deep._tree_root['frontier']['temperature'], debt)
+                    self.assertEqual(deep._tree_root['resume_values'][(side, True)], 0.0)
+                    self.assertTrue(deep._tree_root['resume_blocked'])
                     deep.rank_candidates(board, {B: 100.0}, side, complete_scores=True)
                     self.assertEqual(deep.cache_stats['frontier_resumes'], 0)
-                    self.assertEqual(deep._tree_root['frontier']['temperature'], 0.0)
+                    self.assertEqual(deep._tree_root['frontier']['temperature'], debt)
+                    self.assertEqual(deep._tree_root['resume_values'][(side, True)], 0.0)
+                    self.assertTrue(deep._tree_root['resume_blocked'])
                 self.assertEqual(snapshot(board, search), before)
 
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main()

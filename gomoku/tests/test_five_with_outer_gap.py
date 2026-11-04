@@ -97,7 +97,7 @@ class FiveWithOuterGapTest(unittest.TestCase):
                               search.gear, search.zero_history, search.zero_active), before)
 
     def test_f3_is_hard_loss_in_actual_search(self):
-        """真实候选与递归回传必须把 F3 标成必败，并完整恢复搜索状态。"""
+        """F3已被真实候选剔除；强制搜索仍须回传硬败并完整恢复状态。"""
         for player in (BLACK, WHITE):
             with self.subTest(player=player):
                 board = screenshot_board(player)
@@ -109,7 +109,9 @@ class FiveWithOuterGapTest(unittest.TestCase):
                                         search.gear, search.zero_history, search.zero_active))
                 reason, points = search.tactical_candidates(board, player)
                 self.assertEqual(reason, 'opp-vcf')
-                ranked = deep.rank_candidates(board, points, player)
+                # F3现已在候选阶段作为无效防点剔除；仍强制搜索它验证硬败事实。
+                self.assertNotIn(point('F3'), points)
+                ranked = deep.rank_candidates(board, {point('F3'):100.}, player)
                 f3 = next(x for x in ranked if (x['r'], x['c']) == point('F3'))
                 self.assertEqual(f3['state'], DeepSearch.STATE_LOSE)
                 self.assertEqual(f3['state_name'], '必败')
@@ -119,5 +121,14 @@ class FiveWithOuterGapTest(unittest.TestCase):
                 self.assertIsNone(deep._root_pass)
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main()

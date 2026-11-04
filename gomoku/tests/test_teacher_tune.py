@@ -379,5 +379,14 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(len(list(out.glob('test-*.json'))), 1)
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main()

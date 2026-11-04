@@ -16,7 +16,6 @@
 #   python engine.py --serve                 # 常驻 stdin/stdout 循环（TODO）
 # ============================================================
 
-import os
 import sys
 import json
 from random import SystemRandom
@@ -29,25 +28,18 @@ from .opening_book import OpeningBook, _opening_move, opening_fallback
 
 
 class Engine:
-    """引擎：组装全部底层，负责决策编排（AI 执白，对手执黑）。
-    可选「决策网络」（决策大脑）：use_decision_net=True 且模型可用时，
-    analyze_turn 出全候选后由网络打分选点（结合棋盘棋感 + 实战记忆）；
-    网络未启用/未加载/异常 → 自动回退纯算法第一名，两套系统互不干扰。"""
+    """纯算法引擎：组织候选、深推和五态排序，不加载或调用神经网络。"""
 
-    def __init__(self, decision_net=None, use_decision_net=False):
+    def __init__(self):
         self.pattern = PatternAnalyzer()
         self.search = Search(self.pattern)        # 状态表 + 候选 + 评分兜底
         self.opening_book = OpeningBook()
         self._reset_opening_orientation()
         self.opening_source = None  # 本次决策来自可靠谱着、后续谱候选或原算法。
         self.deep_search = DeepSearch(self.search)  # 温度银行深推
-        # 决策网络（可选）：None 或加载失败 → 纯算法回退
-        self.decision_net = decision_net
-        self.use_decision_net = use_decision_net
-        self._decision_model_tried = decision_net is not None
-        self._memory = None                       # MemoryLookup 懒加载缓存
-        self.decision_net_used = False
         self.moves = []                           # 真实对局着法 [(r,c,player)]（记忆匹配用）
+        self._searched_sides = set()
+        self._loaded_position = False
 
     # ---------- 状态维护 ----------
 
@@ -63,13 +55,14 @@ class Engine:
         self._opening_symmetry = SystemRandom().randrange(8)
 
     def reset(self, moves=()):
-        """重建真实棋谱及搜索状态，保留网络/温度及本局开局方向（包括悔棋到空盘）。"""
+        """重建真实棋谱及搜索状态，保留温度及本局开局方向（包括悔棋到空盘）。"""
+        moves = tuple(moves)
+        self._searched_sides.clear()
+        self._loaded_position = bool(moves)  # 非空重建/导入标记为中间冷启动，不沿用旧树。
         self.search = Search(self.pattern)
         self.deep_search.search = self.search
         self.deep_search.clear_search_cache()
         self.moves = []
-        self._memory = None
-        self.decision_net_used = False
         self.opening_source = None
         board = [[EMPTY] * SIZE for _ in range(SIZE)]
         for move in moves:
@@ -82,7 +75,6 @@ class Engine:
     def compute_move(self, board, player=WHITE):
         """按 player 视角选点；开局返回候选列表，其余复用 analyze_turn。"""
         self.deep_search.reset_leaf_eval_stats()
-        self.decision_net_used = False
         self.opening_source = None
         opening = self._opening_candidates(board, player)
         if opening is not None:
@@ -122,6 +114,19 @@ class Engine:
                 stats[parent].append((r, c, SUBCLASS_NAMES[state[r][c]]))
         return stats
 
+    def _rank_search(self, board, points, player, complete_scores):
+        """正式开局160、中途120；显式实验可覆盖二者，续温仍由cached_turn处理。"""
+        d = self.deep_search
+        middle = self._loaded_position or player in self._searched_sides
+        d.last_temperature_kind = 'middle_cold' if middle else 'opening_cold'
+        d._cold_temperature = d.MIDDLE_COLD_T0 if middle else d.OPENING_COLD_T0
+        self._searched_sides.add(player)
+        try:
+            return (d.rank_candidates(board, points, player, complete_scores=True)
+                    if complete_scores else d.rank_candidates(board, points, player))
+        finally:
+            d._cold_temperature = None
+
     def analyze_turn(self, board, player, *, complete_scores=False):
         """轮到 player 时的完整分析，输出 4 部分（agent 决策界面）：
         1. part1_opp_threat：对方视角威胁分布（0必杀/1威胁/2潜力/3无用，各含点位+子类名）
@@ -132,15 +137,16 @@ class Engine:
              my-five→direct(落子即胜)   / opp-five→direct(直接堵)
              my-vcf(活四/44/43)→direct  / opp-vcf→defense(反推堵点,带权重dict)
              my-d33→direct              / opp-d33→defense(反推堵点,带权重dict)
-             全无→fallback(3攻2防列表)
+             全无→fallback(2攻2防，最多4点)
            points 形态：direct 为 [(r,c),...] 列表；
                         defense/fallback 为 {(r,c): 权重} 字典（权重供温度分配/排序用）
         4. part4_result：{'type': 'direct'|'searched', 'move': (r,c), 'ranked': [...]}
-             direct（唯一候选）→ 不深推，ranked 给超大分 1e9；
-             searched（候选 ≥2）→ ranked 全返回；已淘汰硬败可 score=None，其他分完整。
+             direct → 不深推；实际成五硬胜+1000，未证明直取保留1e9标记；
+             searched → 硬态±1000定分并允许早停，其他候选保留原加权估分。
         """
-        self.decision_net_used = False
         self.opening_source = None
+        # 直取/谱着等不形成搜索树的路径必须清空上一手报告，不能残留。
+        self.deep_search.root_contribution_report = None
         # 直取分支不会进入 rank_candidates，也要清掉上一手的叶子统计。
         self.deep_search.reset_leaf_eval_stats()
         opp_state = self.search.sw if player == BLACK else self.search.sb
@@ -150,7 +156,30 @@ class Engine:
             'part1_opp_threat': self._threat_stats(board, opp_state),
             'part2_my_threat': self._threat_stats(board, my_state),
         }
+        # 命中已搜索节点时，候选和中间边直接继承；只有叶子允许生成新候选。
+        cached = self.deep_search.cached_turn(board, player)
+        if cached is not None:
+            self._searched_sides.add(player)
+            self.deep_search.last_temperature_kind = 'continuation'
+            points, reason, ranked = cached
+            result['part3_candidates'] = {
+                'type': 'defense' if reason in ('opp-vcf', 'opp-d33') else ('direct' if reason else 'fallback'),
+                'reason': reason or 'none', 'points': points}
+            best = ranked[0] if ranked else None
+            result['part4_result'] = {
+                'type': 'searched', 'move': (best['r'], best['c']) if best else None,
+                'ranked': ranked}
+            return result
         reason, tactical = self.search.tactical_candidates(board, player)
+        if reason in ('opp-vcf', 'opp-d33') and not tactical:
+            ranked = self.deep_search._no_defense_turn(board, player, reason)
+            self._searched_sides.add(player)
+            self.deep_search.last_temperature_kind = 'hard_terminal'
+            best = ranked[0] if ranked else None
+            result['part3_candidates'] = {'type': 'defense', 'reason': reason, 'points': {}}
+            result['part4_result'] = {'type': 'searched',
+                'move': (best['r'], best['c']) if best else None, 'ranked': ranked}
+            return result
         opening = self._opening_candidates(board, player, (reason, tactical))
         if opening:
             move = opening[0]
@@ -167,9 +196,8 @@ class Engine:
                     'reason': reason,
                     'points': tactical if defense else list(tactical)}
         else:
-            # 机机对战中黑白双方都可用动态配比；
-            # 深推内部普通候选固定 2攻1防，根层仍按原动态档位取点。
-            gear = self.search._choose_gear(board, player)
+            # 根层和深推使用同一普通候选入口，当前固定2攻2防。
+            # 动态名额暂不接入；模拟层与真实层不分别维护两套配比。
             # fallback 候选带 _candidate_score 真实分（dict 形态），
             # rank_candidates 按分分配温度：强候选（冲四/活三成型点）推深。
             # 叠加记忆经验修正（move_memory_bonus）：历史赢谱落点加分、
@@ -177,7 +205,7 @@ class Engine:
             mem_bonus = self._memory_bonus()
             pts = {}
             for (rr, cc), s in [(p[:2], p[2]) for p in
-                                self.search._fallback(board, gear=gear, player=player, with_score=True)]:
+                                self.search._ordinary_candidates(board, player=player, with_score=True)]:
                 if (rr, cc) not in pts or s > pts[(rr, cc)]:
                     pts[(rr, cc)] = min(max(float(s) + mem_bonus.get((rr, cc), 0.0), 1.0), 100.0)
             # 第四次落子起，谱点只补入根候选；不改递归宽度、温度或五态排序。
@@ -229,86 +257,16 @@ class Engine:
                     'ranked': [self.deep_search._candidate_result(r0, c0, 1e9)],
                 }
             else:
-                if complete_scores or self.use_decision_net:
-                    ranked = self.deep_search.rank_candidates(board, pts, player, complete_scores=True)
-                else:
-                    ranked = self.deep_search.rank_candidates(board, pts, player)
+                ranked = self._rank_search(board, pts, player, complete_scores)
                 best = ranked[0] if ranked else None
                 result['part4_result'] = {
                     'type': 'searched',
                     'move': (best['r'], best['c']) if best else None,
                     'ranked': ranked,
                 }
-        # 决策网络选点（可选）：覆盖 move，ranked 全候选保持原样（供大模型/网络输入）
-        if result['part4_result'].get('ranked'):
-            mv = self._decision_pick(board, player, result['part4_result']['ranked'])
-            result['part4_result']['move'] = mv
         return result
 
-    # ---------- 决策网络（决策大脑，可选） ----------
-
-    def _decision_pick(self, board, player, ranked):
-        """决策网络选点：唯一候选直取；多候选时网络打分选最高。
-        网络未启用/未加载/异常 → 回退纯算法第一名（两套系统并行，互不干扰）。"""
-        self.decision_net_used = False
-        if not ranked:
-            return None
-        if len(ranked) == 1:
-            return (ranked[0]['r'], ranked[0]['c'])
-        if not self.use_decision_net:
-            return (ranked[0]['r'], ranked[0]['c'])
-        try:
-            net = self._ensure_decision_net()
-            if net is None:
-                return (ranked[0]['r'], ranked[0]['c'])
-            mem = self._ensure_memory()
-            if mem is not None:
-                wins, losses, self_wins, self_losses = mem.batch_stats(self.moves, player, ranked)
-            else:
-                wins = losses = self_wins = self_losses = [0] * len(ranked)
-            import torch
-            from gomoku.nn.decision_input import encode_decision
-            xb, xc, mask = encode_decision(board, self.search, ranked, wins, losses, self_wins, self_losses)
-            dev = next(net.parameters()).device          # 跟随网络所在设备（cuda/cpu）
-            xb = torch.from_numpy(xb).to(dev)
-            xc = torch.from_numpy(xc).to(dev)
-            mask = torch.from_numpy(mask).to(dev)
-            idx = net.pick(xb, xc, mask)[0]
-            pt = ranked[idx]
-            self.decision_net_used = True
-            return (pt['r'], pt['c'])
-        except Exception:
-            return (ranked[0]['r'], ranked[0]['c'])
-
-    def _ensure_decision_net(self):
-        """懒加载决策网络权重 gomoku/nn/decision.pt；不存在/失败 → None（回退纯算法）。"""
-        if self._decision_model_tried:
-            return self.decision_net
-        self._decision_model_tried = True
-        try:
-            import torch
-            from gomoku.nn.decision_net import DecisionNet
-            path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), 'gomoku', 'nn', 'decision.pt')
-            net = DecisionNet()
-            net.load_state_dict(torch.load(path, map_location='cpu', weights_only=True))
-            net.eval()
-            self.decision_net = net
-        except Exception:
-            self.decision_net = None
-        return self.decision_net
-
-    def _ensure_memory(self):
-        """懒加载全局记忆查询；文件缺失/失败 → None（候选历史战绩全 0）。"""
-        if self._memory is None:
-            try:
-                from gomoku.nn.memory_lookup import MemoryLookup
-                self._memory = MemoryLookup()
-                if not self._memory.bad_lines and not self._memory.good_lines:
-                    self._memory = False
-            except Exception:
-                self._memory = False
-        return self._memory if self._memory else None
+    # ---------- 普通对局记忆 ----------
 
     def _memory_bonus(self):
         """历史经验修正表（memory.move_memory_bonus）：赢谱落点加分/败谱落点减分。

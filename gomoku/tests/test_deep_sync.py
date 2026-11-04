@@ -80,28 +80,17 @@ class DeepSyncTest(unittest.TestCase):
         b[8][5] = 0
 
     def test_leaf_eval_status_reports_actual_path(self):
-        """状态显示应区分实际启发式叶子和未触发，而不是只看 use_nn 开关。"""
+        """纯算法叶子和未触发状态来自本次实际计算。"""
         e = Engine()
-        e.deep_search.use_nn = False
         branch = [(7, 7, WHITE, 60.0)]
-
         e.deep_search.reset_leaf_eval_stats()
         e.deep_search._leaf_score(empty_board(), branch, 'stale', WHITE, [])
         status = e.deep_search.leaf_eval_status()
         self.assertEqual(status['mode'], 'heuristic')
         self.assertEqual(status['total'], 1)
         self.assertEqual(status['heuristic'], 1)
-        self.assertEqual(status['reason'], '已关闭')
-
-        e.deep_search.reset_leaf_eval_stats()
-        e.deep_search.use_nn = True
-        with patch.object(e.deep_search, '_nn_score', return_value=0.25):
-            e.deep_search._leaf_score(empty_board(), branch, 'stale', WHITE, [])
-        status = e.deep_search.leaf_eval_status()
-        self.assertEqual(status['mode'], 'neural')
-        self.assertEqual(status['nn'], 1)
-        self.assertEqual(status['total'], 1)
-
+        self.assertEqual(status['reason'], '纯算法')
+        self.assertNotIn('nn', status)
         e.deep_search.reset_leaf_eval_stats()
         e.deep_search._leaf_score(empty_board(), branch, 'win', WHITE, [])
         status = e.deep_search.leaf_eval_status()

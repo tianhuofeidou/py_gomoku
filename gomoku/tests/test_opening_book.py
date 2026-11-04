@@ -295,12 +295,11 @@ class OpeningBookTest(unittest.TestCase):
             self.assertIn(desired, rank.call_args.args[1])
             self.assertNotIn((7, 8), rank.call_args.args[1])
 
-    def test_opening_takeover_also_precedes_optional_decision_network(self):
-        engine = Engine(use_decision_net=True)
-        with patch.object(engine, '_decision_pick', side_effect=AssertionError('开局不能被网络改选')):
+    def test_opening_takeover_does_not_enter_search(self):
+        engine = Engine()
+        with patch.object(engine.deep_search, 'rank_candidates', side_effect=AssertionError('开局不应深推')):
             result = engine.analyze_turn(empty_board(), BLACK)
         self.assertEqual(result['part4_result']['move'], (7, 7))
-        self.assertFalse(engine.decision_net_used)
 
     def test_fourth_move_book_point_is_searched_with_original_weight(self):
         for player, count in ((BLACK, 6), (WHITE, 7)):

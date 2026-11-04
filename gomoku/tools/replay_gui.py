@@ -225,8 +225,8 @@ class ReplayWindow(tk.Toplevel):
     def __init__(self, parent, board_style):
         super().__init__(parent)
         self.title('棋谱复盘 · 棋逢小鲸')
-        self.geometry('1160x780')
-        self.minsize(850, 600)
+        self.geometry('1380x860')
+        self.minsize(1060, 650)
         self.style = board_style
         self.SIZE, self.CELL, self.MARGIN = board_style.SIZE, board_style.CELL, board_style.MARGIN
         self.analysis_hints = []
@@ -244,8 +244,25 @@ class ReplayWindow(tk.Toplevel):
         top.pack(fill=tk.X)
         ttk.Button(top, text='选择记录目录', command=self._choose_directory).pack(side=tk.LEFT)
         ttk.Button(top, text='打开棋谱文件', command=self._choose_file).pack(side=tk.LEFT, padx=8)
+        ttk.Button(top, text='载入当前手到搜索树', command=self._open_search_debug).pack(side=tk.LEFT, padx=8)
+        ttk.Button(top, text='读取搜索树JSON', command=self._open_search_trace).pack(side=tk.LEFT, padx=8)
         ttk.Label(top, textvariable=self.directory).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        body = ttk.Frame(self)
+        self.pages = ttk.Notebook(self)
+        self.pages.pack(fill=tk.BOTH, expand=True)
+        self.replay_page = ttk.Frame(self.pages)
+        self.search_page = ttk.Frame(self.pages)
+        self.pages.add(self.replay_page, text='棋谱')
+        self.pages.add(self.search_page, text='搜索树')
+        self.debug_panel = None
+        self.debug_origin = tk.StringVar(value='还未载入：在棋谱页选择棋局和手数，再点“载入当前手到搜索树”。')
+        ttk.Label(self.search_page, textvariable=self.debug_origin, padding=8).pack(fill=tk.X)
+        self.search_body = ttk.Frame(self.search_page)
+        self.search_body.pack(fill=tk.BOTH, expand=True)
+        self.search_hint = ttk.Label(self.search_body,
+            text='可读取原有棋谱目录/JSON。原谱当前手和试走分支都能直接载入搜索树，无需重新输入局面。',
+            padding=20, wraplength=1000)
+        self.search_hint.pack(anchor='nw')
+        body = ttk.Frame(self.replay_page)
         body.pack(fill=tk.BOTH, expand=True)
         left = ttk.Frame(body, padding=10, width=350)
         left.pack(side=tk.LEFT, fill=tk.Y)
@@ -281,6 +298,57 @@ class ReplayWindow(tk.Toplevel):
         self.bind('<Right>', lambda e: self._key_step(e, 1))
         self.protocol('WM_DELETE_WINDOW', self._close)
         self.after_idle(self._restore_directory)
+
+    def _open_search_debug(self):
+        if self.position is None:
+            self.status.set('请先选择棋谱和手数。')
+            return
+        moves = [tuple(m[:3]) for m in self.position.moves()]
+        self.pages.select(self.search_page)
+        panel = self.debug_panel
+        if panel is not None and panel.winfo_exists():
+            if panel.initial_moves == moves:
+                self.status.set('当前手已经载入，保留已有搜索树和续温会话。')
+                return
+            if panel.busy:
+                self.status.set('搜索树仍在计算；请先在搜索树页停止，待进程退出后再载入另一局面。')
+                return
+            panel.destroy()
+        if self.search_hint is not None:
+            self.search_hint.destroy()
+            self.search_hint = None
+        from .search_tree_gui import SearchTreePanel
+        self.debug_panel = SearchTreePanel(self.search_body, moves, self.style)
+        self.debug_panel.pack(fill=tk.BOTH, expand=True)
+        kind = '原谱' if self.position.branch_base is None else '试走分支'
+        self.debug_origin.set('调试来源：%s · %s第%d手；切回棋谱选另一手后，可再次点“载入当前手到搜索树”。' %
+                              (self.position.record.identity, kind, len(moves)))
+        self.status.set('局面已载入本窗口的搜索树页，点击“搜索当前局面”开始。')
+
+    def _open_search_trace(self):
+        """不依赖棋谱：直接读取导出的搜索录像并创建搜索树面板。"""
+        from .search_tree_gui import SearchTreePanel, trace_export_directory
+        try:
+            directory = trace_export_directory()
+        except OSError:
+            directory = None
+        path = filedialog.askopenfilename(parent=self, title='读取搜索树JSON',
+            initialdir=str(directory) if directory else None,
+            filetypes=[('搜索录像', '*.json'), ('所有文件', '*.*')])
+        if not path:
+            return
+        self.pages.select(self.search_page)
+        panel = self.debug_panel
+        if panel is None or not panel.winfo_exists():
+            if self.search_hint is not None:
+                self.search_hint.destroy()
+                self.search_hint = None
+            panel = SearchTreePanel(self.search_body, [], self.style)
+            panel.pack(fill=tk.BOTH, expand=True)
+            self.debug_panel = panel
+        panel.load_recording(path)
+        self.debug_origin.set('搜索录像：%s' % path)
+        self.status.set('正在读取搜索树录像。')
 
     def _grid(self):
         return self.style._grid(self)
@@ -396,6 +464,8 @@ class ReplayWindow(tk.Toplevel):
         self._refresh()
 
     def _key_step(self, event, delta):
+        if self.pages.select() != str(self.replay_page):
+            return
         if isinstance(event.widget, (tk.Text, tk.Entry, ttk.Entry, ttk.Combobox, tk.Listbox)):
             return
         self._step(delta)

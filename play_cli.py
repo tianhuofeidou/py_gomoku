@@ -99,8 +99,6 @@ def ai_turn(s):
     (r, c), ranked, net_used = out
     source = s.engine.opening_source
     label = service.decision_source_label(source)
-    if net_used:      # 只在真实完成网络推理时才这样标
-        label += '＋神经网络'
     # 开局直取：谱着不是必胜手，分数按"谱着"显示。
     opening = source in ('book', 'rules')
     print('AI 落子 %s%d' % (COLUMNS[c], r + 1))

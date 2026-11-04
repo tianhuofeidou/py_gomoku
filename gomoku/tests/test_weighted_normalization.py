@@ -51,11 +51,15 @@ class WeightedNormalizationTest(unittest.TestCase):
                         engine.search.zero_history, engine.search.zero_active))
                     leaves = capture_leaves(engine.deep_search)
                     result = engine.analyze_turn(board, defender, complete_scores=complete)
-                    self.assertEqual(tuple(result['part4_result']['move']), point('I6'))
+                    # 固定2攻2防及新终止政策会改变最优点；此处验证归一性质，
+                    # 不把旧树选出的I6当作新树的独立棋力真值。
+                    self.assertIn(tuple(result['part4_result']['move']), [point('I6'),point('D1'),point('H5')])
                     ranked = result['part4_result']['ranked']
                     # I6 为修复后的近端防守点；三点均走零耗温战术，普通补步已禁止。
-                    self.assertEqual([(row['r'], row['c']) for row in ranked],
-                                     [point('I6'), point('D1'), point('H5')])
+                    self.assertEqual({(row['r'], row['c']) for row in ranked},
+                                     {point('I6'), point('D1'), point('H5')})
+                    self.assertEqual(tuple(result['part4_result']['move']),
+                                     (ranked[0]['r'],ranked[0]['c']))
                     self.assertEqual([row['state_name'] for row in ranked], ['无'] * 3)
                     for higher, lower_row in zip(ranked, ranked[1:]):
                         self.assertGreater(higher['score'], lower_row['score'])
@@ -76,5 +80,14 @@ class WeightedNormalizationTest(unittest.TestCase):
                     self.assertIsNone(engine.deep_search._root_pass)
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main()

@@ -88,6 +88,9 @@ assert len(SUBCLASS_NAMES) == 18 and len(SUBCLASS_PARENT) == 18
 # 三步杀跑不过。判据见 Search._d34_is_defensible。
 FOUR_GRADES = frozenset((0, 1, 2, 3, 5, 6, 7, 8))
 
+# 缓存身份包含候选合并政策；不是可调参数。
+DEFENSE_POLICY = 'counter-in-union-else-intersection-v1'
+
 # 父类威胁优先级（数值越大越优先）—— search 分派依据
 # 进攻侧 / 防守侧交错，由 owner 定稿后锁定
 THREAT_PRIORITY = {
@@ -527,7 +530,8 @@ class Search:
 
         特例：我方 VCF 档里的四三（d34）先过"反四"检测——若被对手的堵四兼成四
         防住，就从必杀档降级（状态表不动，只降本次决策身份）；本档若因此变空，
-        自动让位给下一档（对方 VCF 的反推堵点）。判据见 _d34_is_defensible。"""
+        自动让位给下一档（对方 VCF 的反推堵点）。判据见 _d34_is_defensible。
+        防守档统一先用E交C（非空），否则用D；无解仍返回原防守reason与空字典。"""
         c = self.candidates(board)
         mine, other = ('b', 'w') if player == BLACK else ('w', 'b')
         for owner, prefix, kind in (
@@ -542,13 +546,36 @@ class Search:
                 continue
             if owner == 'my' or kind == 'five':
                 return owner + '-' + kind, {p: 100.0 for p in points}
+            # E是各来源防点并集，D是交集。先找E中我方能成四的点；
+            # 非空只展开E交C，否则只展开D。E外纯冲四不额外补入。
             defense = {}
+            priority = {}
+            common = None
             for r, col in points:
-                for point, weight in self._defense_candidates(
-                        board, r, col, player=3 - player).items():
+                local = self._defense_candidates(board, r, col, player=3-player, _priorities=priority)
+                common = set(local) if common is None else common.intersection(local)
+                for point, weight in local.items():
                     defense[point] = max(defense.get(point, 0), weight)
-            return owner + '-' + kind, defense
+            my_state = self.sb if player == BLACK else self.sw
+            counters = {point: weight for point, weight in defense.items()
+                        if my_state[point[0]][point[1]] in FOUR_GRADES}
+            selected = counters if counters else {
+                point: weight for point, weight in defense.items() if point in common}
+            # 保留reason：空字典表示本政策下防守无解，不是普通候选池为空。
+            selected = dict(sorted(selected.items(), key=lambda item: priority.get(item[0], 2)))
+            return owner + '-' + kind, selected
         return None, {}
+
+    def _defense_fallback(self, board, player, reason):
+        """无共同防点时保留合法败势落子；不将该兜底重新送入搜索树。"""
+        other = self.sw if player == BLACK else self.sb
+        grades = (1, 2, 3) if reason == 'opp-vcf' else (4,)
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r][c] == EMPTY and other[r][c] in grades:
+                    return r, c
+        return next(((r, c) for r in range(SIZE) for c in range(SIZE)
+                     if board[r][c] == EMPTY), None)
 
     # ---------- 四三「反四」特例（状态表不动，只降本次决策身份） ----------
 
@@ -596,7 +623,15 @@ class Search:
                         out.append(point)
         return out
 
-    def _defense_candidates(self, board, r, c, is_kill=True, player=BLACK):
+    @staticmethod
+    def _ordered_defenses(points, priority, merged):
+        """来源顺序：复合杀中心0、跳型中缝1、活三端点等2；权重原样保留。"""
+        if merged is not None:
+            for point in points:
+                merged[point] = min(merged.get(point, 2), priority.get(point, 2))
+        return dict(sorted(points.items(), key=lambda item: priority.get(item[0], 2)))
+
+    def _defense_candidates(self, board, r, c, is_kill=True, player=BLACK, *, _priorities=None):
         """防守候选（带权重）——模拟落子反推必杀点 (r,c) 的堵法。
         player 指定“被模拟落子的一方”（即对方威胁方）：
           - 白方防守黑方威胁时 player=BLACK（默认，保持旧行为）
@@ -607,11 +642,14 @@ class Search:
            提取合法线端空位（类型 1/3/4/5，包含距离为 1 的近端）作为端点候选 = 80 分
            （is_kill）或 60 分；再按 gap_location 提取缝（两个 player 子之间的空位，
            xx_xx 中间格）作为候选，同样 = 80/60 分。数据与 scan_two 一致。
+        4. 必杀来源的端点/缝须模拟防守后削弱该来源，或本身形成冲四反击；
+           不按距离排除近端，也不把跳冲四的无效外端当作免费防点。
         返回 {(r, c): score}（score 用于深度推演的温度分配/排序）。
         """
         center_w = 100.0 if is_kill else 60.0
         end_w = 80.0 if is_kill else 60.0
         pts = {(r, c): center_w}
+        priority = {(r, c): 2}
         board[r][c] = player
         try:
             recs = self.pattern.analyze_point(board, r, c, player)
@@ -632,6 +670,7 @@ class Search:
                     pr, pc = r + sign * d * dr, c + sign * d * dc   # 该端空位（紧贴段外）
                     if 0 <= pr < SIZE and 0 <= pc < SIZE and board[pr][pc] == EMPTY:
                         pts[(pr, pc)] = end_w
+                        priority.setdefault((pr, pc), 2)
                 # ② gap 提取：缝 = 两个 player 子之间的空位（xx_xx 的中间格）。
                 #    gap_location = 缝到基子的距离（0 = 无缝）。左右两侧都试，
                 #    验证缝两侧紧邻格都是 player 子才确认是真缝（兼容双缝拆分的记录）。
@@ -648,9 +687,35 @@ class Search:
                         if (0 <= lr < SIZE and 0 <= lc < SIZE and board[lr][lc] == player
                                 and 0 <= rr2 < SIZE and 0 <= rc2 < SIZE and board[rr2][rc2] == player):
                             pts[(pr, pc)] = end_w
+                            priority[(pr, pc)] = min(priority.get((pr, pc), 2), 1)
         finally:
             board[r][c] = EMPTY
-        return pts
+        # 只约束实际必杀来源；单活三等几何查询保留原候选含义。
+        source_grade = self._eval(board, r, c, player) if is_kill else 17
+        if source_grade in (2, 3, 4):
+            priority[(r, c)] = 0
+        if source_grade not in (1, 2, 3, 4):
+            return self._ordered_defenses(pts, priority, _priorities)
+        was_defensible = (source_grade == 3
+                          and self._d34_is_defensible(board, r, c, player))
+        defender = 3 - player
+        valid = {(r, c): center_w}
+        for (pr, pc), weight in pts.items():
+            if (pr, pc) == (r, c):
+                continue
+            board[pr][pc] = defender
+            try:
+                after_grade = self._eval(board, r, c, player)
+                weakened = after_grade > source_grade
+                if (not weakened and source_grade == after_grade == 3
+                        and not was_defensible):
+                    weakened = self._d34_is_defensible(board, r, c, player)
+            finally:
+                board[pr][pc] = EMPTY
+            # 防点可以是本方低档点；但原杀型完全未变时，至少要有冲四反击。
+            if weakened or self._eval(board, pr, pc, defender) in FOUR_GRADES:
+                valid[(pr, pc)] = weight
+        return self._ordered_defenses(valid, priority, _priorities)
 
     # ---------- 子类排序键与评分 ----------
 
@@ -883,6 +948,14 @@ class Search:
             orbit = tuple(sorted(set(f(r, c) for f in syms)))
             return ('sym', orbit)
         return ('pat', self._pattern_sig(board, r, c, player))
+
+    def _ordinary_candidates(self, board, player=WHITE, with_score=False):
+        """根层与深推共用普通候选策略；当前固定2攻2防、最多4点。
+
+        候选排序、去重和权重沿用同一套实现。以后动态配比从此统一接入，
+        不由根层与递归分别决定名额，也不在模拟期间更新真实攻防档位。
+        """
+        return self._fallback_by_count(board, 2, 2, player, with_score)
 
     def _fallback(self, board, gear=None, player=WHITE, with_score=False):
         """兜底候选（无必杀时）：默认 3 攻 + 2 防 = 5 个点，保证不重复。

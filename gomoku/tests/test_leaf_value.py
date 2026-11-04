@@ -12,7 +12,6 @@ from gomoku.core.engine import Engine
 
 def engine_with(stones):
     e = Engine()
-    e.deep_search.use_nn = False
     b = empty_board()
     for r, c, p in stones:
         place(b, r, c, p)
@@ -191,7 +190,6 @@ class LeafScoreTest(unittest.TestCase):
 
     def test_win_lose_constant(self):
         e = Engine()
-        e.deep_search.use_nn = False
         b = empty_board()
         branch = [(7, 7, WHITE, 100.0)]
         self.assertEqual(e.deep_search._leaf_score(b, branch, 'win', WHITE, []), 1000.0)
@@ -199,7 +197,6 @@ class LeafScoreTest(unittest.TestCase):
 
     def test_stale_stats_path(self):
         e = Engine()
-        e.deep_search.use_nn = False
         b = empty_board()
         branch = [(7, 7, WHITE, 60.0)]
         e.deep_search.reset_leaf_eval_stats()
@@ -296,9 +293,10 @@ class IntegrationTest(unittest.TestCase):
 
     def test_rank_returns_desc_and_valid(self):
         """普通局面：候选全部打分、降序、空位（回归场景）。"""
-        e, b = engine_with([(7, 7, BLACK), (6, 6, WHITE), (5, 5, BLACK), (6, 8, WHITE),
-                            (5, 6, BLACK), (7, 6, WHITE), (4, 6, BLACK), (8, 8, WHITE),
-                            (5, 8, BLACK), (6, 7, WHITE)])
+        # 原十手局面已有VCF硬胜，允许首个硬胜早停；普通排序改用无战术六手局面。
+        e, b = engine_with([(7, 7, BLACK), (7, 6, WHITE), (6, 6, BLACK),
+                            (6, 7, WHITE), (5, 8, BLACK), (8, 5, WHITE)])
+        self.assertIsNone(e.search.tactical_candidates(b, WHITE)[0])
         res = e.analyze_turn(b, WHITE)
         r4 = res['part4_result']
         self.assertEqual(r4['type'], 'searched')
@@ -312,5 +310,14 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual(b[x['r']][x['c']], 0)
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main(verbosity=2)

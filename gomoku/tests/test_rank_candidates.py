@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""候选点打分回归测试（定稿规则：候选>1 必须深推、全返回；非硬败及全败兜底保留完整原始分；
-唯一候选不深推、给超大分 1e9）。"""
+"""候选打分：硬态±1000且允许早停；未确定候选按原加权分排序。"""
 import unittest
+from unittest.mock import patch
 
 from gomoku.core.utils import empty_board, place, BLACK, WHITE
 from gomoku.core.engine import Engine
@@ -16,7 +16,7 @@ def replay(e, b, moves):
 class RankCandidatesTest(unittest.TestCase):
 
     def test_single_candidate_direct_huge_score(self):
-        """唯一五连点：不深推，ranked 给 1e9"""
+        """唯一五连点：不深推，硬胜给+1000"""
         e = Engine()
         b = empty_board()
         # 黑横四 (7,3)-(7,6)，左端 (7,2) 白堵，右端 (7,7) 空 → 唯一五连点 (7,7)
@@ -28,7 +28,7 @@ class RankCandidatesTest(unittest.TestCase):
         self.assertEqual(r4['type'], 'direct')
         self.assertEqual(r4['move'], (7, 7))
         self.assertEqual(len(r4['ranked']), 1)
-        self.assertEqual(r4['ranked'][0]['score'], 1e9)
+        self.assertEqual(r4['ranked'][0]['score'], 1000.)
         self.assertEqual((r4['ranked'][0]['r'], r4['ranked'][0]['c']), (7, 7))
 
     def test_multi_candidates_all_ranked_desc(self):
@@ -43,12 +43,26 @@ class RankCandidatesTest(unittest.TestCase):
         r4 = res['part4_result']
         self.assertEqual(r4['type'], 'searched')
         ranked = r4['ranked']
-        self.assertTrue(len(ranked) >= 2, '普通局面候选应 ≥2')
+        self.assertTrue(ranked)
+        if len(ranked) == 1:
+            self.assertEqual(ranked[0]['state'], 1)  # 已证明首个硬胜时无需其他候选。
+            self.assertEqual(ranked[0]['score'], 1000.)
         keys = [e.deep_search._pick_key_state(x.get('state'), x['score']) for x in ranked]
         self.assertEqual(keys, sorted(keys, reverse=True), '应按状态档位+候选分降序')
         self.assertEqual(r4['move'], (ranked[0]['r'], ranked[0]['c']))
         for x in ranked:
             self.assertEqual(b[x['r']][x['c']], 0, '候选点应为空位')
+
+    def test_all_unknown_candidates_keep_complete_numeric_order(self):
+        d = Engine().deep_search
+        d.T0 = 1.  # 根入口有正温，每个普通根步后截断。
+        points = {(7,7):100., (7,9):80., (8,7):60., (8,9):40.}
+        with patch.object(d, '_tactical_result', return_value=(None, {})), \
+                patch.object(d, '_leaf_score', side_effect=lambda b,br,*args: float(br[0][1])):
+            rows = d.rank_candidates(empty_board(), points, WHITE)
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(r['state'] == 0 and r['score_complete'] for r in rows))
+        self.assertEqual([r['score'] for r in rows], [9.,9.,7.,7.])
 
     def test_deep_search_old_api_compatible(self):
         """deep_search 旧接口兼容：仍返回最高分点"""

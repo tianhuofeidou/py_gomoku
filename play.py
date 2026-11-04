@@ -25,7 +25,7 @@ from gomoku.session import PlaySession
 from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.12.0'
+APP_TITLE = '棋逢小鲸 v1.13.0'
 
 
 def _resource_path(relative_path):
@@ -72,9 +72,6 @@ class GomokuApp:
         self.root.geometry('1120x780')      # 初始窗口；棋盘随窗口自适应缩放
         self.root.minsize(900, 560)        # 为左侧面板、候选日志和完整棋盘保留空间
         self.session = PlaySession('local')
-        # 默认纯算法（神经网络已全局停用）
-        self.session.engine.use_decision_net = False
-        self.session.engine.deep_search.use_nn = False
         self.last_move = None
         self.analysis_hints = []
         self.ai_thinking = False
@@ -569,6 +566,9 @@ class GomokuApp:
             self._log('记忆读取失败：' + str(e))
 
 def main():
+    # PyInstaller EXE 的调试子进程入口必须在创建任何Tk窗口之前分流。
+    from multiprocessing import freeze_support
+    freeze_support()
     root = tk.Tk()
     GomokuApp(root)
     root.mainloop()

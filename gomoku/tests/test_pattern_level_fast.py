@@ -253,7 +253,7 @@ class RankingEquivalenceTest(unittest.TestCase):
         engine.deep_search.T0 = 40.0        # 压低温度，保证 CI 里跑得快
         engine.deep_search.reset_leaf_eval_stats()
         result = engine.analyze_turn(board, player)
-        return result, engine.deep_search.leaf_eval_status(), engine.decision_net_used
+        return result, engine.deep_search.leaf_eval_status(), False
 
     def test_ranked_identical_with_reference_eval(self):
         for index, moves in enumerate(self.POSITIONS):

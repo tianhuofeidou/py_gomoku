@@ -11,7 +11,8 @@
 能成四即反四 → 该点从必杀档降级，让位给下一档（对方 VCF 的反推堵点）。
 活四/双眠四的成五点 ≥2，对手一手堵不完 → 不降级，仍按必杀直取。
 
-本文件在旧实现上失败（旧实现落 D11）、在新实现上通过（落 E6）。
+本文件保留D11反四漏洞反例。复合防守的新规则优先E交C，当前选择E10冲四兼防，
+不再固定选择旧策略的E6；D11仍不得作为可赢杀棋直取。
 """
 import os
 import tempfile
@@ -47,7 +48,6 @@ def rot90_swap(r, c, player):
 def build(upto=35, transform=None):
     """重放前 upto 手，返回 (engine, board)；transform 用于对称局。"""
     engine = Engine()
-    engine.deep_search.use_nn = False
     board = empty_board()
     for index, token in enumerate(GAME[:upto]):
         r, c = rc(token)
@@ -80,7 +80,7 @@ class D34DefensibleTest(unittest.TestCase):
             self.addCleanup(context.stop)
 
     def test_game_35_abandons_defensible_d34(self):
-        """旧实现落 D11（必败），新实现让位到第四档并落 E6。"""
+        """放弃可被反四的D11；按E交C优先选择E10冲四兼防。"""
         engine, board = build(35)
         reason, points = engine.search.tactical_candidates(board, WHITE)
         self.assertEqual(reason, 'opp-vcf',
@@ -88,7 +88,8 @@ class D34DefensibleTest(unittest.TestCase):
         self.assertNotIn(D11, points)
         move = engine.compute_move(board, WHITE)
         self.assertNotEqual(move, D11, '可被反四防住的四三不得直取')
-        self.assertEqual(move, E6)
+        self.assertEqual(points, {E10: 100.0})
+        self.assertEqual(move, E10)
 
     def test_defensible_d34_is_detected(self):
         """D11 的成五点是 E10，而 E10 是黑棋的活四格（反四）→ 判可防。"""
@@ -100,7 +101,6 @@ class D34DefensibleTest(unittest.TestCase):
     def test_live4_and_d44_are_not_downgraded(self):
         """成五点 ≥2（活四/双眠四）＝对手一手堵不完 → 不判可防。"""
         engine = Engine()
-        engine.deep_search.use_nn = False
         board = empty_board()
         # 白 (7,4)(7,5)(7,6) + 黑 (7,7)：白落 (7,3) 成眠四，成五点 (7,2)
         # 白 (4,3)(5,3)(6,3) + 黑 (3,3)：同一手在 3 列再成眠四 → 双眠四 d44
@@ -115,7 +115,6 @@ class D34DefensibleTest(unittest.TestCase):
     def test_defensible_d34_keeps_kill_when_no_counter_four(self):
         """成五点唯一、但对手在该点成不了四 → 不降级，仍是必杀。"""
         engine = Engine()
-        engine.deep_search.use_nn = False
         board = empty_board()
         # 白 (7,4)(7,5)(7,6) + 黑 (7,7)：落 (7,3) 成眠四（成五点 (7,2)）
         # 白 (5,3)(6,3)：同一手在 3 列成活三 → 合起来是四三 d34
@@ -129,7 +128,7 @@ class D34DefensibleTest(unittest.TestCase):
         engine, board = build(35, transform=rot90_swap)
         move = engine.compute_move(board, BLACK)
         self.assertNotEqual(move, rot90_swap(*D11, WHITE)[:2])
-        self.assertEqual(move, rot90_swap(*E6, WHITE)[:2])
+        self.assertEqual(move, rot90_swap(*E10, WHITE)[:2])
 
     def test_probe_restores_board_and_tables(self):
         """特例检测只临时落子：返回前棋盘与黑白状态表必须逐格复原。"""

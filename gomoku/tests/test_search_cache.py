@@ -42,10 +42,11 @@ def replay(engine, board, tokens):
 
 def build(tokens=GAME):
     engine = Engine()
-    engine.deep_search.use_nn = False
     board = empty_board()
     replay(engine, board, tokens)
     engine.deep_search.T0 = TEST_T0
+    engine.deep_search.OPENING_COLD_T0 = TEST_T0
+    engine.deep_search.MIDDLE_COLD_T0 = TEST_T0
     return engine, board
 
 
@@ -79,31 +80,31 @@ class SearchCacheTest(unittest.TestCase):
 
     # ---------- 候选上限 ----------
 
-    def test_root_five_and_internal_two_attack_one_defense_at_all_depths(self):
+    def test_root_and_internal_two_attack_two_defense_at_all_depths(self):
         engine, board = build(GAME[:4])
         deep = engine.deep_search
         for player in (BLACK, WHITE):
             self.assertFalse(deep._tactical_result(board, player)[0])
             root = deep._candidate_points(board, player, 5, plies=0)
-            expected_root = engine.search._fallback(board, player=player, with_score=True)
-            expected_internal = engine.search._fallback_by_count(
-                board, 2, 1, player=player, with_score=True)
-            clamp = lambda rows: [(r, c, min(max(float(w), 1.0), 100.0))
-                                  for r, c, w in rows]
+            expected_root = engine.search._fallback_by_count(board, 2, 2, player=player, with_score=True)
+            expected_internal = expected_root
+            # 普通点现在按评分顺序搜索；配额仍先取2攻2防，不截旧5点表。
+            clamp = lambda rows: sorted([(r, c, min(max(float(w), 1.0), 100.0))
+                                  for r, c, w in rows], key=lambda row: -row[2])
             self.assertEqual(root, clamp(expected_root))
-            self.assertEqual(len(root), 5)
+            self.assertEqual(len(root), 4)
             for plies in (1, 8, 16, 20):
                 with self.subTest(player=player, plies=plies):
                     points = deep._candidate_points(board, player, 5, plies=plies)
                     self.assertEqual(points, clamp(expected_internal))
-                    self.assertEqual(len(points), 3)
+                    self.assertEqual(len(points), 4)
 
     # ---------- 冷算 vs 缓存 ----------
 
     def test_cold_and_warm_match_after_real_move(self):
         engine, board = build()
         deep = engine.deep_search
-        self.assertEqual(deep._tree_root, deep._new_tree_node(deep._position_key(board)))
+        self.assertEqual(deep._tree_root, dict(deep._new_tree_node(deep._position_key(board)), mover=engine.moves[-1][2]))
         self.assertEqual(hits(deep.cache_stats), 0)  # 开始前没有旧搜索结果；本轮内部允许命中。
         cold = engine.analyze_turn(board, BLACK)['part4_result']['ranked']
         move = (cold[0]['r'], cold[0]['c'])
@@ -138,7 +139,7 @@ class SearchCacheTest(unittest.TestCase):
         self.assertTrue(old_root['children'])
         engine.reset(moves_of(GAME))
         self.assertIsNot(deep._tree_root, old_root)
-        self.assertEqual(deep._tree_root, deep._new_tree_node(deep._position_key(board)))
+        self.assertEqual(deep._tree_root, dict(deep._new_tree_node(deep._position_key(board)), mover=engine.moves[-1][2]))
         self.assertIsNone(deep._tree_signature)
         self.assertEqual(deep._cache_positions, {})
         self.assertEqual(deep._cache_paths, {})
@@ -295,7 +296,7 @@ class SearchCacheTest(unittest.TestCase):
 
     # ---------- 判态早停不能冒充完整评分 ----------
 
-    def test_early_stop_is_not_reused_as_complete(self):
+    def test_proven_hard_loss_reuses_fixed_complete_score(self):
         engine = Engine()
         deep = engine.deep_search
         deep.T0 = 4.
@@ -324,8 +325,9 @@ class SearchCacheTest(unittest.TestCase):
         first = run()
         second = run()
         self.assertEqual(signature(first), signature(second))
-        self.assertIsNone(second[1]['score'])
-        self.assertFalse(second[1]['score_complete'])
+        self.assertEqual(second[1]['state'], deep.STATE_LOSE)
+        self.assertEqual(second[1]['score'], -1000.)
+        self.assertTrue(second[1]['score_complete'])
         self.assertTrue(second[0]['score_complete'])
 
     # ---------- 黑白双方与模拟回滚 ----------
@@ -349,5 +351,14 @@ class SearchCacheTest(unittest.TestCase):
                          signature(fresh_w.analyze_turn(board_w, WHITE)['part4_result']['ranked']))
 
 
+
+# 本轮发布默认改为8/3/120；以下旧机制回归显式固定旧口径。
+from gomoku.tests._legacy_defaults import enter_legacy as _enter_legacy, leave_legacy as _leave_legacy
+
+def setUpModule():
+    _enter_legacy()
+
+def tearDownModule():
+    _leave_legacy()
 if __name__ == '__main__':
     unittest.main(verbosity=2)

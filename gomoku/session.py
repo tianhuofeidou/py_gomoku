@@ -60,7 +60,7 @@ class PlaySession:
         part4 = result['part4_result']
         move = part4.get('move')
         ranked = part4.get('ranked') or []
-        return move, ranked, self.engine.decision_net_used
+        return move, ranked, False  # 保留既有三元组接口。
 
     def undo(self, by='human'):
         if by == 'human':

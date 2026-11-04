@@ -56,7 +56,6 @@ def rc(token):
 def build(transform=None):
     """重放 16 手；transform 用于对称局。返回 (engine, board)。"""
     engine = Engine()
-    engine.deep_search.use_nn = False
     board = empty_board()
     for index, token in enumerate(GAME):
         r, c = rc(token)
@@ -71,7 +70,6 @@ def build(transform=None):
 def board_engine(stones):
     """按 (r,c,player) 摆子并同步引擎状态表。"""
     engine = Engine()
-    engine.deep_search.use_nn = False
     board = empty_board()
     for r, c, player in stones:
         place(board, r, c, player)

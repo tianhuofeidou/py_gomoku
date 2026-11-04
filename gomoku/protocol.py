@@ -26,7 +26,7 @@ import sys
 from gomoku import service
 from gomoku.core.utils import BLACK, WHITE, SIZE, empty_board, place
 
-ABOUT = 'name="QifengXiaojing", version="1.12.0", author="tianhuofeidou", country="CHN"'
+ABOUT = 'name="QifengXiaojing", version="1.13.0", author="tianhuofeidou", country="CHN"'
 SUPPORTED_SIZES = (SIZE,)
 
 
@@ -239,18 +239,20 @@ def run(stream_in=None, stream_out=None):
 def main(argv=None):
     """协议入口。
 
-    `--t0` 覆盖推演温度（`DeepSearch.T0`）：对战台批量自对弈时可降到 40 加速，
+    `--t0` 同时覆盖开局/中途冷启动与续温信用：批量自对弈时可降到 40 加速，
     默认沿用引擎默认档（160），与界面/正式对局一致。用 parse_known_args，
     避免管理器传入的额外参数把引擎打死。
     """
     import argparse
     ap = argparse.ArgumentParser(description='Gomocup 协议入口（stdin/stdout）')
     ap.add_argument('--t0', type=float, default=None,
-                    help='覆盖 DeepSearch.T0（默认 160；批量对战可用 40 加速）')
+                    help='同时覆盖冷启动与续温温度；不传保留正式160/120配置')
     args, _unknown = ap.parse_known_args(argv)
     if args.t0 is not None:
         from gomoku.core.deep_search import DeepSearch
         DeepSearch.T0 = float(args.t0)
+        DeepSearch.OPENING_COLD_T0 = float(args.t0)
+        DeepSearch.MIDDLE_COLD_T0 = float(args.t0)
     return run()
 
 

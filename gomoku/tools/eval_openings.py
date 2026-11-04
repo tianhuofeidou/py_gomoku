@@ -1,13 +1,7 @@
 # -*- coding: utf-8 -*-
-"""中盘开局批量评估：真实局面开局，对比"轮到方用 A 网络引擎" vs "纯算法引擎"。
+"""从已有中盘局面评估纯算法引擎；rebuild_states 也供 GA 工具调用。
 
-数据：gomoku/data/eval_openings.json（KataGo 真实局面，子数 8-14）
-每开局：轮到方分别用 net 引擎（use_nn=model）和 base 引擎跑，对手恒为 base。
-统计轮到方胜率：net 版 vs base 版。
-
-用法：
-  py -3.14 -m gomoku.tools.eval_openings --model gomoku/nn/value_game.pt --t0 80
-  （--model 缺省 = 纯算法评估当前引擎参数）
+用法：python -m gomoku.tools.eval_openings --t0 80
 """
 import argparse
 import json
@@ -56,7 +50,6 @@ def play_from(board, to_move, e_turn, e_opp, t0, max_moves=60):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', default=None, help='net 模型路径（None=base）')
     ap.add_argument('--t0', type=float, default=80.0)
     ap.add_argument('--openings', default='gomoku/data/eval_openings.json')
     ap.add_argument('--max-moves', type=int, default=60)
@@ -67,17 +60,10 @@ def main():
     n = 0
     for i, op in enumerate(opens):
         board, to_move = op['board'], op['to_move']
-        if args.model:
-            e_turn = Engine()
-            e_turn.deep_search.use_nn = True
-            e_turn.deep_search.model_path = args.model
-        else:
-            e_turn = Engine()
-            e_turn.deep_search.use_nn = False
+        e_turn = Engine()
         e_opp = Engine()
-        e_opp.deep_search.use_nn = False
         w = play_from(board, to_move, e_turn, e_opp, args.t0, args.max_moves)
-        tag = 'net' if args.model else 'base'
+        tag = '纯算法'
         if w is True:
             wins += 1
             n += 1
@@ -88,7 +74,7 @@ def main():
         else:
             print('open%2d: 僵持' % i, flush=True)
     print('=== %s: 轮到方胜率 %d/%d = %.0f%% ===' % (
-        'net(' + args.model + ')' if args.model else 'base', wins, n,
+        '纯算法', wins, n,
         wins / max(n, 1) * 100))
 
 

@@ -38,7 +38,8 @@ class StateBackpropTest(unittest.TestCase):
                 elif scenario == 'risk':
                     points = [bad, unclear]
                 elif b[first[0]][first[1]]:
-                    points = [good, bad] if scenario in ('both', 'hard_win_risk') else [good]
+                    points = ([bad, good] if scenario == 'both' else
+                              [good, bad] if scenario in ('both_skipped', 'hard_win_risk') else [good])
                 else:
                     points = [unclear]
             elif count == 3:
@@ -74,7 +75,8 @@ class StateBackpropTest(unittest.TestCase):
 
     def test_local_opportunity_risk_and_risk_priority(self):
         expected = {'opportunity': D.STATE_EXISTS_WIN, 'risk': D.STATE_EXISTS_LOSE,
-                    'both': D.STATE_EXISTS_LOSE, 'hard_win_risk': D.STATE_WIN}
+                    'both': D.STATE_EXISTS_LOSE, 'both_skipped': D.STATE_EXISTS_WIN,
+                    'hard_win_risk': D.STATE_WIN}  # 未展开败路不得伪造软风险。
         for player, scenario in itertools.product((BLACK, WHITE), expected):
             with self.subTest(player=player, scenario=scenario):
                 self.assertEqual(self.run_tree(scenario, player)['state'], expected[scenario])
@@ -123,7 +125,7 @@ class StateBackpropTest(unittest.TestCase):
                     patch.object(deep, '_leaf_score', side_effect=score):
                 ranked = deep.rank_candidates(board, roots, player)
                 move = deep.deep_search(board, roots, player)
-            self.assertEqual(move, (7, 9) if all_lose else (7, 7))
+            self.assertEqual(move, (7, 7))  # 全硬败同分按原候选顺序兜底。
             self.assertEqual(ranked[0]['state'], D.STATE_LOSE if all_lose else D.STATE_NONE)
             self.assertEqual(board, empty_board())
 
@@ -139,7 +141,7 @@ class StateBackpropTest(unittest.TestCase):
                 self.assertEqual(result['state'], expected)
                 self.assertEqual(result['forced'], D._state_forced(expected))
                 self.assertEqual(result['child_state'], 'none')
-                self.assertEqual(result['score'], 1e9)
+                self.assertEqual(result['score'], 1000. if expected == D.STATE_WIN else 1e9)
 
     def test_depth_five_hard_results_match_independent_minimax(self):
         def combine_tree(leaves):

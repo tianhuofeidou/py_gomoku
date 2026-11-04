@@ -91,7 +91,6 @@ class FourWithOuterGapTest(unittest.TestCase):
                 engine = Engine()
                 engine._memory_bonus = lambda: {}
                 engine.deep_search.T0 = 160
-                engine.deep_search.use_nn = False
                 board = empty_board()
                 for i, label in enumerate(TPTC_PREFIX):
                     r, c = point(label)

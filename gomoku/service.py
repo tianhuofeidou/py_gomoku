@@ -4,7 +4,7 @@
 所有入口统一委托 Engine.analyze_turn：
   - 本方前三手 → 命中可靠棋谱才直取，出谱交回原算法；
   - 后续 → 谱点参与根候选，按原温度银行与五态排序选点。
-返回 ((row, col), ranked, net_used)。ranked 供界面按五态和完整分展示全候选；未补算的已淘汰硬败分为 None。
+返回 ((row, col), ranked, net_used)，兼容字段 net_used 固定为 False。ranked 供界面按五态和完整分展示全候选；未补算的已淘汰硬败分为 None。
 """
 import json
 import os
@@ -44,27 +44,24 @@ def load_ga_params():
         pass
 
 
-def create_engine(use_decision_net=False):
-    """新会话拥有独立引擎，所有运行入口使用同一配置。
-    暂定：默认纯算法（决策网络停用），不再读取 DSH_GOMOKU_USE_NET。"""
+def create_engine():
+    """创建独立的纯算法会话引擎。"""
     load_ga_params()
-    return Engine(use_decision_net=bool(use_decision_net))
+    return Engine()
 
 
-def get_engine(use_decision_net=None):
+def get_engine():
     """兼容无会话调用的单例；正常会话使用 create_engine 隔离状态。"""
     global _engine
     if _engine is None:
-        _engine = create_engine(use_decision_net=use_decision_net)
-    elif use_decision_net is not None:
-        _engine.use_decision_net = use_decision_net
+        _engine = create_engine()
     return _engine
 
 
 def ai_move(board, moves, player, engine=None):
     """规范化 AI 落子。engine 可传入已与 board 同步的实例（界面用）；缺省用单例。
 
-    返回 ((row, col), ranked, net_used)。
+    返回 ((row, col), ranked, net_used)，兼容字段 net_used 固定为 False。
     """
     if engine is None:
         engine = get_engine()
@@ -80,7 +77,7 @@ def ai_move(board, moves, player, engine=None):
     res = engine.analyze_turn(board, player)
     mv = res['part4_result']['move']
     ranked = res['part4_result'].get('ranked') or []
-    net_used = engine.decision_net_used
+    net_used = False  # 兼容旧三元组/JSON字段；纯算法路径固定为False。
 
     if isinstance(mv, list):
         mv = mv[0] if mv else None

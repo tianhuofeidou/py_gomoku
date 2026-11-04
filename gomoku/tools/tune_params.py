@@ -139,7 +139,9 @@ def parameter_scope(params, t0=80):
     deep_values = dict(
         MY_SUB_VALUE=(0.0,) * 5 + tuple(params[f'my_{i}'] for i in range(12)) + (0.0,),
         OPP_SUB_VALUE=(0.0,) * 5 + tuple(params[f'opp_{i}'] for i in range(12)) + (0.0,),
-        T0=t0, DT_M=params['dt_m'], DT_POW=params['dt_pow'], DT_N=params['dt_n'],
+        # 显式离线温度同时约束建树与续温；离开作用域恢复正式160/120。
+        T0=t0, OPENING_COLD_T0=t0, MIDDLE_COLD_T0=t0,
+        DT_M=params['dt_m'], DT_POW=params['dt_pow'], DT_N=params['dt_n'],
         PRUNE_W=params['prune'])
     scoped_values = ((S, search_values), (DeepSearch, deep_values),
                      (Engine, {'_memory_bonus': lambda self: {}}))
@@ -176,6 +178,10 @@ class Expression(float):
         return Expression(float(self) * other, ('scale', float(other), self.node))
 
     __rmul__ = __mul__
+
+    def __neg__(self):
+        # 战术静态探针先按下一行棋方评分，再取负转回主评分方。
+        return self * -1.0
 
 
 def flatten(value):
@@ -215,8 +221,13 @@ class RecordingSearch(DeepSearch):
 
     def _leaf_score_impl(self, board, branch, status, player, ctx_branch=None):
         self.leaves += 1
-        value = super()._leaf_score_impl(board, branch, status, player, ctx_branch)
-        if not self.record or status != 'stale':
+        return super()._leaf_score_impl(board, branch, status, player, ctx_branch)
+
+    def _stale_result_score(self, board, player):
+        # 战术预算截断会直接调用静态评分，不能只记录status=stale的叶子入口。
+        # 在同一原生评分调用点附加表达式，普通叶子与一层探针均保留真实视角。
+        value = super()._stale_result_score(board, player)
+        if not self.record:
             return value
         my = self.search.sb if player == 1 else self.search.sw
         opp = self.search.sw if player == 1 else self.search.sb
