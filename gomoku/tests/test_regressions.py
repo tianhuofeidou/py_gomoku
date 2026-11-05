@@ -292,7 +292,11 @@ class RegressionTest(unittest.TestCase):
                                             'moves': moves, 'player': 1})
                 child = (
                     'from unittest.mock import patch\n'
-                    'from gomoku.adapter.ai_move import main\n'
+                    'from gomoku.core.deep_search import DeepSearch\n'
+                    + ''.join(f'DeepSearch.{name} = {getattr(DeepSearch, name)!r}\n'
+                              for name in ('MIN_SEARCH_PLIES', 'TACTICAL_FREE_PLIES',
+                                           'TACTICAL_BATCH_SIZE', 'MIDDLE_COLD_T0'))
+                    + 'from gomoku.adapter.ai_move import main\n'
                     "with patch('gomoku.core.engine.SystemRandom') as source:\n"
                     f'    source.return_value.randrange.return_value = {symmetry}\n'
                     '    main()\n')

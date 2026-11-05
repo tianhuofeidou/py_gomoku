@@ -15,13 +15,21 @@ class FullDirectionSearch(Search):
     """优化前的更新方式：棋段区内每点、每方完整扫描四方向，不读方向缓存。"""
 
     def on_move(self, board, r, c, player, journal=None, record_history=True):
+        if journal is not None:
+            journal.setdefault((id(self), -1, -1),
+                               (self.gear.copy(), self.gear_progress.copy(), self._gear_active.copy()))
         self._write_state(self.sb, r, c, 17, journal)
         self._write_state(self.sw, r, c, 17, journal)
         region = self.scope._both_segment_scope(board, r, c)
         for side, state in ((BLACK, self.sb), (WHITE, self.sw)):
             for rr, cc in region:
+                if board[rr][cc] == EMPTY:
+                    for axis, (dr, dc) in enumerate(DIRECTIONS):
+                        self._write_state(self._direction_levels[side], rr * SIZE + cc, axis,
+                                          self._direction_level(board, rr, cc, side, dr, dc), journal)
                 value = self._eval(board, rr, cc, side) if board[rr][cc] == EMPTY else 17
                 self._write_state(state, rr, cc, value, journal)
+        self._record_gear_threats(board, player)
         if record_history:
             self._record_zero_event(board, BLACK)
             self._record_zero_event(board, WHITE)

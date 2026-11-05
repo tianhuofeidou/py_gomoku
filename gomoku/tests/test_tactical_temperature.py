@@ -3,8 +3,10 @@
 import copy
 import types
 import unittest
+from unittest.mock import patch
 
 from gomoku.core.engine import Engine
+from gomoku.core.deep_search import DeepSearch
 from gomoku.core.utils import BLACK, WHITE, empty_board
 from gomoku.tests.test_leaf_turn_boundary import capture_leaves
 
@@ -17,6 +19,11 @@ def snapshot(engine, board):
 
 
 class TacticalTemperatureTest(unittest.TestCase):
+    def setUp(self):
+        setting = patch.object(DeepSearch, 'MIN_SEARCH_PLIES', 0)
+        setting.start()
+        self.addCleanup(setting.stop)
+
     def test_live_four_is_resolved_even_at_zero_or_negative_temperature(self):
         for player in (BLACK, WHITE):
             for temperature in (0, -5):
@@ -77,7 +84,7 @@ class TacticalTemperatureTest(unittest.TestCase):
                     self.assertEqual(leaves[0]['score_player'], player)
                     self.assertIsNone(leaves[0]['next_reason'])
                     self.assertFalse(leaves[0]['kill_active'], '未落普通步，不能产生落子后的新威胁')
-                    self.assertEqual(costs, [deep._dt(60)])
+                    self.assertEqual(costs, [deep._dt(deep._pattern_temperature_weight(player, 7, 7))])
                     self.assertEqual(snapshot(engine, board), before)
 
     def test_unrelated_root_is_not_free_even_when_board_has_tactical_points(self):

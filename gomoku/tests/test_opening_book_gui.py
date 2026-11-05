@@ -32,14 +32,14 @@ class OpeningBookGuiTest(unittest.TestCase):
                 app.session.reset(mode='pvp')
                 app._analysis_apply(app._analysis_calc(1))
                 self.assertEqual(app.decision_eval_var.get(), '辅助决策：棋谱开局')
-                self.assertIn('未触发', app.leaf_eval_var.get())
+                self.assertIn('纯算法', app.leaf_eval_var.get())
                 self.assertEqual(app.session.game.moves, [])
                 self.assertEqual(app.analysis_hints[0]['state_name'], '无')
 
                 app.session.engine.opening_book = OpeningBook(())
                 app._analysis_apply(app._analysis_calc(1))
                 self.assertEqual(app.decision_eval_var.get(), '辅助决策：纯算法')
-                self.assertIn('未触发', app.leaf_eval_var.get())
+                self.assertIn('纯算法', app.leaf_eval_var.get())
 
                 engine, board, moves = setup_position(6)
                 engine.opening_book = OpeningBook([record(board, 1, (0, 0))])

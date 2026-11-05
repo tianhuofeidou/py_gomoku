@@ -53,6 +53,7 @@ class TacticalBudgetTest(unittest.TestCase):
         d.TACTICAL_FREE_PLIES = free
         # 本文件显式启用旧负温梯度截断；显式8手延伸另由 extension 测试覆盖。
         d.TACTICAL_EXTENSION_PLIES = None
+        d.MIN_SEARCH_PLIES = 0  # 本夹具验证预算截断，不启用根最低深度豁免。
         board = empty_board()
         points = [(2, 2), (9, 9), (3, 5), (10, 3), (6, 10), (12, 11)]
         second = (2, 3)

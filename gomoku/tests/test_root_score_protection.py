@@ -127,6 +127,8 @@ class RootScoreProtectionTest(unittest.TestCase):
         engine = Engine()
         deep = engine.deep_search
         deep.T0 = 20.
+        deep.MIN_SEARCH_PLIES = 0
+        deep._pattern_temperature_weight = lambda *args: 100.
         roots = {(7, 7): 100., (7, 9): 100.}
 
         def candidates(board, player, n=5, plies=0):

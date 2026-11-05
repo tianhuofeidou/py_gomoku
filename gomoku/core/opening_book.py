@@ -1,7 +1,25 @@
 # -*- coding: utf-8 -*-
-"""完整盘面的人类开局应手与研究线索；谱外交回引擎，不产生五态结论。"""
+"""完整盘面的人类开局应手与研究线索；谱外交回引擎，不产生五态结论。
+
+三套数据分工：
+- 整盘前5手稀疏库（`opening_book_front`）：唯一可用于"固定根落点接管"的来源，
+  每个完整盘面保留全部确认候选、暂定主着、评分视角与来源；
+- 人类经典推荐（`RECORDS`/`ALTERNATIVES`）：本方第四次落子起只补一个根候选；
+- 后续研究线（`CANDIDATES`）：同样只补根候选，不提供胜败证明。
+
+接管只在整盘第1-5手生效（着手前盘面最多4子）。第6手起新库不再接管，
+也不会回落到旧库接管；出谱立即交回原候选与深推。
+"""
 from .utils import BLACK, WHITE, EMPTY, SIZE
 from .opening_book_data import RECORDS, ALTERNATIVES, CANDIDATES
+from .opening_book_front import PROVENANCE as FRONT_PROVENANCE, RECORDS as FRONT_RECORDS
+
+# 整盘前5手指双方合计的第1-5手：第5手落子前盘面最多4子。
+FRONT_STONES_BEFORE = 4
+
+# 候选种类。primary=暂定主着；policy=白二每局视角策略；coverage=已评分保留候选；
+# unrated=待评候选（无同口径评分，不得当作最高分或零分）。
+FRONT_KINDS = ('primary', 'policy', 'coverage', 'unrated')
 
 
 def transform_point(r, c, symmetry):
@@ -38,9 +56,45 @@ def canonical_position(board, player):
     return min(choices)
 
 
+def _front_rows(records):
+    """把前5手记录按完整盘面键索引；多候选与来源全部保留，不做单值截断。"""
+    data = {}
+    for row in records:
+        player, black, white, r, c, kind, score, score_kind, view, source = row
+        if player not in (BLACK, WHITE):
+            raise ValueError('invalid front player')
+        if kind not in FRONT_KINDS:
+            raise ValueError('invalid front kind')
+        if not (0 <= r < SIZE and 0 <= c < SIZE):
+            raise ValueError('invalid front move')
+        if r * SIZE + c in black or r * SIZE + c in white or set(black) & set(white):
+            raise ValueError('occupied front move')
+        # 已评分覆盖必须带同口径分数；主着、白二策略和待评候选可以没有评分
+        # （人工规则或尚无同口径评估），不得因此被当作最高分或零分。
+        if kind == 'coverage' and score is None:
+            raise ValueError('scored coverage candidate must carry its score')
+        if score is not None and (score_kind not in ('cp', 'mate') or view not in ('black', 'white')):
+            raise ValueError('invalid front evaluation')
+        if not source:
+            raise ValueError('front candidate must carry its source')
+        key = (player, tuple(black), tuple(white))
+        entry = {'r': r, 'c': c, 'kind': kind, 'score': score,
+                 'score_kind': score_kind, 'view': view, 'source': source}
+        bucket = data.setdefault(key, [])
+        for existing in bucket:
+            if (existing['r'], existing['c']) == (r, c):
+                raise ValueError('conflicting front candidates')
+        bucket.append(entry)
+    return {key: tuple(bucket) for key, bucket in data.items()}
+
+
 class OpeningBook:
-    """推荐与未评级研究线分开索引；研究线不能用于前三手直接接管。"""
-    def __init__(self, records=RECORDS, alternatives=None):
+    """推荐、研究线与整盘前5手库分开索引；研究线不能用于接管。
+
+    `front` 缺省按打包数据取值；传入自定义 `records` 时，前5手索引退化为
+    每条记录一个暂定主着，用于保持既有单记录测试入口的可接管语义。
+    """
+    def __init__(self, records=RECORDS, alternatives=None, front=None):
         self._moves = self._index_records(records)
         self._candidates = self._index_records(CANDIDATES if records is RECORDS else ())
         if any(len(k[1]) + len(k[2]) < 6 for k in self._candidates):
@@ -51,8 +105,14 @@ class OpeningBook:
         for key, move in self._alternatives.items():
             if key not in self._moves or move == self._moves[key]:
                 raise ValueError('alternative must have a distinct primary opening move')
+        if front is None:
+            front = ((player, black, white, r, c, 'primary', None, None, None, 'custom-book')
+                     for player, black, white, r, c in records) if records is not RECORDS \
+                else FRONT_RECORDS
+        self._front = _front_rows(tuple(front))
         self._max_stones = max((len(k[1]) + len(k[2]) for k in
                                 self._moves.keys() | self._candidates.keys()), default=-1)
+        self.front_provenance = FRONT_PROVENANCE if records is RECORDS else {}
 
     @staticmethod
     def _index_records(records):
@@ -68,6 +128,55 @@ class OpeningBook:
                 raise ValueError('conflicting opening records')
             moves[key] = move
         return moves
+
+    # ---------- 整盘前5手稀疏库 ----------
+
+    def front_choices(self, board, player):
+        """返回该完整盘面保留的全部前5手候选（盘面坐标），只含第1-5手。
+
+        顺序为记录顺序：主着/策略着在前，其余按分数与坐标稳定排序。
+        超过第5手或不在库内返回空；同盘面键的多候选不会被截断成单点。
+        """
+        if sum(cell != EMPTY for row in board for cell in row) > FRONT_STONES_BEFORE:
+            return ()
+        key, symmetry = canonical_position(board, player)
+        rows = self._front.get(key)
+        if not rows:
+            return ()
+        result = []
+        for row in rows:
+            r, c = inverse_point(row['r'], row['c'], symmetry)
+            if board[r][c] != EMPTY:
+                raise ValueError('occupied front move')
+            result.append(((r, c), row['kind'], row['score'], row['score_kind'],
+                           row['view'], row['source']))
+        return tuple(result)
+
+    def front_move(self, board, player, symmetry):
+        """整盘前5手的接管落点；返回 (落点, 来源) 或 (None, None)。
+
+        白二位置保留既有正邻/斜邻选择方式：八种视角前半取正邻、后半取斜邻，
+        各自在四次旋转中遍历方向。其他局面只取暂定主着，不随机抽取候选，
+        也不按 `symmetry // 4` 只在候选前两个里打转。
+        """
+        if sum(cell != EMPTY for row in board for cell in row) > FRONT_STONES_BEFORE:
+            return None, None
+        key, canonical = canonical_position(board, player)
+        rows = self._front.get(key)
+        if not rows:
+            return None, None
+        policy = [row for row in rows if row['kind'] == 'policy']
+        if policy:
+            chosen = policy[(symmetry // 4) % len(policy)]
+        else:
+            primary = [row for row in rows if row['kind'] == 'primary']
+            if not primary:
+                return None, None
+            chosen = primary[0]
+        move = inverse_point(chosen['r'], chosen['c'], canonical)
+        if board[move[0]][move[1]] != EMPTY:
+            raise ValueError('occupied front move')
+        return move, chosen['source']
 
     def lookup(self, board, player):
         """保持单点返回；推荐优先，未评级研究线仅在本方第四手起提供根候选。"""
@@ -105,10 +214,10 @@ class OpeningBook:
 def _opening_move(book, board, player, tactical, symmetry):
     """仅开局接管阶段使用每局固定视角；真实盘面与搜索状态不作修改。
 
-    在旋转后的完整盘面查谱，再逆变换落点。原有方向的高位同时选择主着或备选，
-    当前仅白二有正邻/斜邻两个备选：前四种视角取正邻，后四种取斜邻，
-    各自在四次旋转中遍历四个方向，不新增随机状态或重新抽签。
-    所有备选均须匹配完整盘面；出谱返回空，由同一个引擎继续战术分析及深推。
+    在旋转后的完整盘面查前5手库，再逆变换落点。白二保留正邻/斜邻策略；
+    其余局面只取暂定主着，未评分候选仅作覆盖，不参与选择。
+    谱点须匹配完整盘面且只覆盖第1-5手；出谱返回空，由同一个引擎继续战术
+    分析及深推。
     """
     view = [[EMPTY] * SIZE for _ in range(SIZE)]
     for r in range(SIZE):
@@ -116,11 +225,10 @@ def _opening_move(book, board, player, tactical, symmetry):
             if board[r][c] != EMPTY:
                 rr, cc = transform_point(r, c, symmetry)
                 view[rr][cc] = board[r][c]
-    choices = book._lookup_choices(view, player)
-    if not choices:
+    move, source = book.front_move(view, player, symmetry)
+    if move is None:
         return None, None
-    move = choices[(symmetry // 4) % len(choices)]
-    return inverse_point(*move, symmetry), 'book'
+    return inverse_point(*move, symmetry), source
 
 
 def opening_fallback(board, player, tactical=()):

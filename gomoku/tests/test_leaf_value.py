@@ -268,6 +268,8 @@ class FatalRatioTest(unittest.TestCase):
         """根节点比例用全部子节点做分母；未判定子节点也计入。"""
         e = Engine()
         e.deep_search.T0 = 160.0
+        # 合成分母测试必须走到递归替身；空盘真实纯棋型分不属于本用例。
+        e.deep_search._pattern_temperature_weight = lambda *args: 100.0
         board = empty_board()
         root = (7, 7)
 

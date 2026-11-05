@@ -3,7 +3,7 @@
 
 被测实现位于 gomoku/core/deep_search.py 与 gomoku/core/engine.py：
 `engine.on_move` 推进真实落子树，`engine.reset` 清空；缓存身份由类常量、search
-模块权重与方法对象决定；旧叶子续推温度由欠温、权重、评分和深度共同计算。
+模块权重与方法对象决定；旧叶子按当前根深度拨温并抵扣欠温，权重只作准入限制。
 """
 import copy
 import os
@@ -165,8 +165,9 @@ class SearchCacheTest(unittest.TestCase):
             begin(current_board, trace)
             self.assertIsNot(deep._tree_root, old_root)
             self.assertNotEqual(deep._tree_signature, old_signature)
-            self.assertEqual(deep._tree_root,
-                             deep._new_tree_node(deep._position_key(current_board)))
+            expected = deep._new_tree_node(deep._position_key(current_board))
+            expected['gear_context'] = engine.search._gear_context()
+            self.assertEqual(deep._tree_root, expected)
             self.assertEqual(hits(deep.cache_stats), 0)  # 只在展开前检查旧树未继承。
             observed.append(deep._tree_root)
 
@@ -211,18 +212,18 @@ class SearchCacheTest(unittest.TestCase):
             node = deep._new_tree_node(deep._position_key(board))
             node['frontier'] = dict(player=BLACK, temperature=-15.0,
                                     path_weight=1.0, epoch=0)
-            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0), 40.0)
+            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0, depth=0), 49.0)
             self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
             # 同方同局重复调用：返回值复用，不重复拨温/计数。
-            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0), 40.0)
+            self.assertAlmostEqual(deep._resume_temperature(node, BLACK, 999.0, depth=0), 49.0)
             self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
             # 无旧末端、或旧末端不是同一方：保持本轮入口温度。
             empty_node = deep._new_tree_node(deep._position_key(board))
-            self.assertEqual(deep._resume_temperature(empty_node, BLACK, 123.0), 123.0)
+            self.assertEqual(deep._resume_temperature(empty_node, BLACK, 123.0, depth=0), 123.0)
             wrong = deep._new_tree_node(deep._position_key(board))
             wrong['frontier'] = dict(player=WHITE, temperature=-15.0,
                                      path_weight=1.0, epoch=0)
-            self.assertEqual(deep._resume_temperature(wrong, BLACK, 123.0), 123.0)
+            self.assertEqual(deep._resume_temperature(wrong, BLACK, 123.0, depth=0), 123.0)
         finally:
             deep._reuse_active = False
 
@@ -237,8 +238,8 @@ class SearchCacheTest(unittest.TestCase):
             left['frontier'] = dict(player=BLACK, temperature=-15.0,
                                     path_weight=1.0, epoch=0)
             deep._tree_epoch = 1
-            self.assertAlmostEqual(deep._resume_temperature(left, BLACK, 999.0), 23.0)
-            self.assertEqual(deep._resume_temperature(right, BLACK, 123.0), 123.0)
+            self.assertAlmostEqual(deep._resume_temperature(left, BLACK, 999.0, depth=0), 49.0)
+            self.assertEqual(deep._resume_temperature(right, BLACK, 123.0, depth=0), 123.0)
             self.assertIsNot(left['resume_values'], right['resume_values'])
             # 聚合分数键包含入口温度/路径权重，不同路径不共用结果。
             a = deep._result_key(BLACK, BLACK, 160.0, 1.0)
@@ -249,10 +250,8 @@ class SearchCacheTest(unittest.TestCase):
         finally:
             deep._reuse_active = False
 
-    def test_leaf_continuation_policy_uses_weight_score_depth_and_soft_states(self):
+    def test_leaf_continuation_policy_uses_current_depth_debt_and_soft_states(self):
         deep = DeepSearch(Search(PatternAnalyzer()))
-        # 关闭基础信用后，避免续推上限截平高分与普通叶子的差异。
-        deep._cache_credit = 0.0
 
         def frontier(**kwargs):
             data = dict(temperature=-15.0, path_weight=0.8, depth=4,
@@ -260,27 +259,28 @@ class SearchCacheTest(unittest.TestCase):
             data.update(kwargs)
             return data
 
-        normal, blocked = deep._continuation_temperature(frontier())
+        normal, blocked = deep._continuation_temperature(frontier(), depth=4)
         self.assertFalse(blocked)
-        high_score, _ = deep._continuation_temperature(frontier(score=900.0))
-        self.assertGreater(high_score, normal)
+        self.assertEqual(normal, 17.0)  # -15 + 64 * 2**(-4/4)
+        high_score, _ = deep._continuation_temperature(frontier(score=900.0), depth=4)
+        self.assertEqual(high_score, normal, '评分不能再额外加温')
         low_weight, low_weight_blocked = deep._continuation_temperature(
-            frontier(path_weight=deep.CONTINUE_W_MIN / 2))
+            frontier(path_weight=deep.CONTINUE_W_MIN / 2), depth=4)
         self.assertTrue(low_weight_blocked)
         self.assertEqual(low_weight, 0.0)
         deep_leaf, deep_blocked = deep._continuation_temperature(
-            frontier(depth=deep.CONTINUE_DEPTH_STOP))
-        self.assertTrue(deep_blocked)
-        self.assertEqual(deep_leaf, 0.0)
+            frontier(depth=100), depth=12)
+        self.assertFalse(deep_blocked, '不再按保存时旧深度8硬截断')
+        self.assertEqual(deep_leaf, -7.0)
 
-        soft_win, soft_win_blocked = deep._continuation_temperature(frontier(state=2))
-        soft_lose, soft_lose_blocked = deep._continuation_temperature(frontier(state=-2))
+        soft_win, soft_win_blocked = deep._continuation_temperature(frontier(state=2), depth=4)
+        soft_lose, soft_lose_blocked = deep._continuation_temperature(frontier(state=-2), depth=4)
         self.assertFalse(soft_win_blocked)
         self.assertFalse(soft_lose_blocked)
         self.assertEqual(soft_win, normal)
         self.assertEqual(soft_lose, normal)
         for hard_state in (1, -1):
-            value, hard_blocked = deep._continuation_temperature(frontier(state=hard_state))
+            value, hard_blocked = deep._continuation_temperature(frontier(state=hard_state), depth=4)
             self.assertTrue(hard_blocked)
             self.assertEqual(value, 0.0)
 
@@ -300,6 +300,8 @@ class SearchCacheTest(unittest.TestCase):
         engine = Engine()
         deep = engine.deep_search
         deep.T0 = 4.
+        # 合成硬败树需真实走到对方终局；固定每手3温度，不依赖空盘棋型分。
+        deep._pattern_temperature_weight = lambda *args: 100.
         board = empty_board()
         roots = {(7, 7): 100., (7, 9): 100.}
         calls = []

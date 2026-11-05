@@ -207,7 +207,7 @@ class TacticalExtensionTest(unittest.TestCase):
         d._cache_credit = 160
         frontier = dict(state=0, terminal=False, extension_state=(8, 2, 1),
                         path_weight=1, depth=1, temperature=-1, score=200)
-        self.assertEqual(d._continuation_temperature(frontier), (0, True))
+        self.assertEqual(d._continuation_temperature(frontier, depth=0), (0, True))
         b = empty_board()
         d._begin_search_cache(b, False)
         root = d._tree_root

@@ -15,6 +15,8 @@ class ColdResultReuseTest(unittest.TestCase):
         engine = Engine()
         deep = engine.deep_search
         deep.T0 = 20.
+        # 合成图固定每步3温度；本测试比较缓存前后，真实棋型扣温另有定向回归。
+        deep.MIN_SEARCH_PLIES = 0
         board = empty_board()
         flip = lambda point: (14-point[0], 14-point[1]) if rotated else point
         a, b, e, g, h = map(flip, [(7, 7), (5, 5), (5, 9), (3, 3), (3, 11)])
@@ -56,6 +58,8 @@ class ColdResultReuseTest(unittest.TestCase):
 
         before = snapshot()
         with ExitStack() as stack:
+            stack.enter_context(patch.object(deep, '_pattern_temperature_weight', return_value=100.))
+            stack.enter_context(patch.object(engine.search, '_record_gear_threats', return_value=None))
             stack.enter_context(patch.object(deep, '_candidate_points', side_effect=candidates))
             stack.enter_context(patch.object(deep, '_tactical_result', return_value=(None, {})))
             stack.enter_context(patch.object(deep, '_check_win', side_effect=won))

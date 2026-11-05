@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from gomoku import service
 from gomoku.core.engine import Engine
+from gomoku.core.deep_search import DeepSearch
 from gomoku.core.opening_book import (OpeningBook, canonical_position, transform_point,
                                       inverse_point, opening_fallback)
 from gomoku.core.opening_book_data import RECORDS, ALTERNATIVES, CANDIDATES, PROVENANCE
@@ -30,6 +31,14 @@ def setup_position(count):
         board[r][c] = p
         engine.on_move(board, r, c, p)
     return engine, board, [{'r': r, 'c': c, 'player': p} for r, c, p in moves[:count]]
+
+
+def fixed_neutral_rank(board, points, player, **kwargs):
+    """查谱分派/几何用例的搜索替身，不把谱着本身当作胜败证据。"""
+    if len(points) != 1:
+        raise AssertionError('前三手谱着必须固定一个根候选')
+    r,c = next(iter(points))
+    return [DeepSearch._candidate_result(r,c,0.)]
 
 
 class OpeningBookTest(unittest.TestCase):
@@ -69,8 +78,9 @@ class OpeningBookTest(unittest.TestCase):
             self.assertEqual(board[r][c], 0)
             self.assertEqual(len(black), len(white) + (player == WHITE))
 
-    def test_both_colors_first_three_moves_skip_deep_search(self):
-        for player, counts in ((BLACK, (0, 2, 4)), (WHITE, (1, 3, 5))):
+    def test_both_colors_first_five_plies_fix_choice_and_enter_search(self):
+        """整盘第1-5手接管；白方第5子（整盘第6手）起不再接管，见新库定向测试。"""
+        for player, counts in ((BLACK, (0, 2, 4)), (WHITE, (1, 3))):
             for count in counts:
                 with self.subTest(player=player, count=count):
                     engine, board, moves = setup_position(count)
@@ -79,8 +89,10 @@ class OpeningBookTest(unittest.TestCase):
                     before = copy.deepcopy((board, engine.search.sb, engine.search.sw,
                                             engine.search._direction_levels, engine.moves))
                     engine.deep_search._leaf_score(board, [], 'stale', player, [])
-                    with patch.object(engine.deep_search, 'rank_candidates', side_effect=AssertionError('开局不能深推')):
+                    with patch.object(engine.deep_search, 'rank_candidates', side_effect=fixed_neutral_rank) as rank:
                         move, ranked, net = service.ai_move(board, moves, player, engine)
+                    rank.assert_called_once()
+                    self.assertEqual(list(rank.call_args.args[1]), [desired])
                     self.assertEqual(move, desired)
                     self.assertEqual(engine.opening_source, 'book')
                     self.assertEqual(ranked[0]['state'], 0, '谱着不能伪造必胜')
@@ -90,7 +102,7 @@ class OpeningBookTest(unittest.TestCase):
                                       engine.search._direction_levels, engine.moves), before)
 
     def test_random_orientation_only_chooses_board_preserving_equivalents(self):
-        for player, counts in ((BLACK, (0, 2, 4)), (WHITE, (1, 3, 5))):
+        for player, counts in ((BLACK, (0, 2, 4)), (WHITE, (1, 3))):
             for count in counts:
                 engine, board, _moves = setup_position(count)
                 desired = (2, 1)
@@ -110,7 +122,7 @@ class OpeningBookTest(unittest.TestCase):
                 for symmetry in range(8):
                     with self.subTest(player=player, count=count, symmetry=symmetry):
                         engine._opening_symmetry = symmetry
-                        with patch.object(engine.deep_search, 'rank_candidates', side_effect=AssertionError('开局不能深推')):
+                        with patch.object(engine.deep_search, 'rank_candidates', side_effect=fixed_neutral_rank):
                             result = engine.analyze_turn(board, player)
                             move = result['part4_result']['move']
                             self.assertEqual(engine.compute_move(board, player), [move])
@@ -128,6 +140,7 @@ class OpeningBookTest(unittest.TestCase):
         moves = []
         for symmetry in range(8):
             engine._opening_symmetry = symmetry
+            engine.deep_search.clear_search_cache()  # 改方向模拟另一局，不能沿用上一局固定谱着。
             moves.append(engine.analyze_turn(board, WHITE)['part4_result']['move'])
         expected = {(r, c) for r in range(6, 9) for c in range(6, 9) if (r, c) != (7, 7)}
         self.assertEqual(set(moves), expected)
@@ -295,11 +308,14 @@ class OpeningBookTest(unittest.TestCase):
             self.assertIn(desired, rank.call_args.args[1])
             self.assertNotIn((7, 8), rank.call_args.args[1])
 
-    def test_opening_takeover_does_not_enter_search(self):
+    def test_opening_takeover_searches_the_fixed_point(self):
         engine = Engine()
-        with patch.object(engine.deep_search, 'rank_candidates', side_effect=AssertionError('开局不应深推')):
+        with patch.object(engine.deep_search, 'rank_candidates', wraps=engine.deep_search.rank_candidates) as rank:
             result = engine.analyze_turn(empty_board(), BLACK)
+        rank.assert_called_once_with(empty_board(), {(7,7):1.}, BLACK)
         self.assertEqual(result['part4_result']['move'], (7, 7))
+        self.assertEqual(result['part4_result']['type'], 'searched')
+        self.assertIn((7,7,BLACK), engine.deep_search._tree_root['children'])
 
     def test_fourth_move_book_point_is_searched_with_original_weight(self):
         for player, count in ((BLACK, 6), (WHITE, 7)):

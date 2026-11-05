@@ -24,7 +24,8 @@ from .utils import SIZE, EMPTY, BLACK, WHITE
 from .pattern import PatternAnalyzer
 from .search import Search, SUBCLASS_NAMES, SUBCLASS_PARENT
 from .deep_search import DeepSearch
-from .opening_book import OpeningBook, _opening_move, opening_fallback
+from .opening_book import (OpeningBook, FRONT_STONES_BEFORE, _opening_move,
+                           opening_fallback)
 
 
 class Engine:
@@ -36,6 +37,7 @@ class Engine:
         self.opening_book = OpeningBook()
         self._reset_opening_orientation()
         self.opening_source = None  # 本次决策来自可靠谱着、后续谱候选或原算法。
+        self.opening_detail = None  # 命中谱着时的数据来源标签（不进入返回结构）。
         self.deep_search = DeepSearch(self.search)  # 温度银行深推
         self.moves = []                           # 真实对局着法 [(r,c,player)]（记忆匹配用）
         self._searched_sides = set()
@@ -73,28 +75,30 @@ class Engine:
     # ---------- 核心动作：选点 ----------
 
     def compute_move(self, board, player=WHITE):
-        """按 player 视角选点；开局返回候选列表，其余复用 analyze_turn。"""
-        self.deep_search.reset_leaf_eval_stats()
-        self.opening_source = None
-        opening = self._opening_candidates(board, player)
-        if opening is not None:
-            return opening     # 开局：候选列表直接给 agent
-        return self.analyze_turn(board, player)['part4_result']['move']
+        """统一经analyze_turn建树；查谱阶段仍保留旧的单点列表返回形态。"""
+        opening_form = self._opening_candidates(board, player) is not None
+        move = self.analyze_turn(board, player)['part4_result']['move']
+        # 这里只兼容返回形态，实际落点始终取本次分析/缓存，不能再绕过深推。
+        return [move] if opening_form and move is not None else move
 
     def _opening_candidates(self, board, player=WHITE, tactical=None):
-        """本方前三次落子由开局模块接管；计数取盘面，不依赖协议着法顺序。
+        """整盘前5手由前5手库接管；计数取盘面，不依赖协议着法顺序。
 
-        compute_move 保留开局返回列表的既有接口。成五/堵五交回正式战术直取，
-        其余命中可靠完整局面棋谱才接管；出谱立即交回原候选与温度银行。
+        compute_move保留开局返回列表的既有接口。成五/堵五交回战术逻辑；
+        谱着只固定根落点，仍按预算搜索其后续；出谱交回普通候选。
+        第6手起（着手前盘面已有5子）不再接管，也不会回落到旧库接管。
         """
-        if sum(row.count(player) for row in board) >= 3:
+        if (sum(cell != EMPTY for row in board for cell in row) > FRONT_STONES_BEFORE
+                or sum(row.count(player) for row in board) >= 3):
             return None
         reason, points = (self.search.tactical_candidates(board, player)
                           if tactical is None else tactical)
         if reason in ('my-five', 'opp-five'):
             return None
-        move, self.opening_source = _opening_move(
+        move, self.opening_detail = _opening_move(
             self.opening_book, board, player, points, self._opening_symmetry)
+        # 公开取值仍为 'book'；具体数据来源只保存在 opening_detail，不进返回结构。
+        self.opening_source = 'book' if move is not None else None
         return [move] if move is not None else None
 
     # ---------- 分析接口（4 部分输出） ----------
@@ -131,23 +135,23 @@ class Engine:
         """轮到 player 时的完整分析，输出 4 部分（agent 决策界面）：
         1. part1_opp_threat：对方视角威胁分布（0必杀/1威胁/2潜力/3无用，各含点位+子类名）
         2. part2_my_threat ：己方视角威胁分布（同上）
-        本方前三手命中可靠棋谱才直取（成五/堵五优先），出谱走原算法。
-        从本方第四手起，谱点仅补入普通根候选；所有谱点保留原评分与五态语义。
+        双方合计第1—5手命中前5手库则固定落点并续推（成五/堵五优先）。
+        接管以外的旧谱点只补入普通根候选；所有谱点保留原评分与五态语义。
         3. part3_candidates：初始候选点，按检测优先级【命中即止】取第一个命中的类型：
-             my-five→direct(落子即胜)   / opp-five→direct(直接堵)
+             my-five→direct(落子即胜)   / opp-five→direct(固定堵点后续推)
              my-vcf(活四/44/43)→direct  / opp-vcf→defense(反推堵点,带权重dict)
              my-d33→direct              / opp-d33→defense(反推堵点,带权重dict)
-             全无→fallback(2攻2防，最多4点)
+             全无→fallback(五档动态攻防，普通池最多4点)
            points 形态：direct 为 [(r,c),...] 列表；
-                        defense/fallback 为 {(r,c): 权重} 字典（权重供温度分配/排序用）
+                        defense/fallback 为 {(r,c): 综合权重} 字典（供排序及路线质量使用）
         4. part4_result：{'type': 'direct'|'searched', 'move': (r,c), 'ranked': [...]}
-             direct → 不深推；实际成五硬胜+1000，未证明直取保留1e9标记；
+             direct → 仅实际成五直接结束，硬胜+1000；
              searched → 硬态±1000定分并允许早停，其他候选保留原加权估分。
         """
         self.opening_source = None
-        # 直取/谱着等不形成搜索树的路径必须清空上一手报告，不能残留。
+        # 本次结果刷新前先清空旧报告；成五直取不能残留上一手汇总。
         self.deep_search.root_contribution_report = None
-        # 直取分支不会进入 rank_candidates，也要清掉上一手的叶子统计。
+        # 成五直取不会进入rank_candidates，也要清掉上一手的叶子统计。
         self.deep_search.reset_leaf_eval_stats()
         opp_state = self.search.sw if player == BLACK else self.search.sb
         my_state = self.search.sb if player == BLACK else self.search.sw
@@ -185,9 +189,12 @@ class Engine:
             move = opening[0]
             result['part3_candidates'] = {
                 'type': 'direct', 'reason': 'opening-' + self.opening_source, 'points': opening}
+            mode = 'dual' if self.search._dual_score(board, *move) > 0 else 'attack'
+            weight = min(max(float(self.search._candidate_score(board, *move, player, mode)), 1.0), 100.0)
+            # 保留谱点综合分；普通扣温在深推中独立读取落子方纯棋型分。
+            ranked = self._rank_search(board, {move: weight}, player, complete_scores)
             result['part4_result'] = {
-                'type': 'direct', 'move': move,
-                'ranked': [self.deep_search._candidate_result(*move, 1e9)],
+                'type': 'searched', 'move': move, 'ranked': ranked,
             }
             return result
         if reason:
@@ -196,10 +203,10 @@ class Engine:
                     'reason': reason,
                     'points': tactical if defense else list(tactical)}
         else:
-            # 根层和深推使用同一普通候选入口，当前固定2攻2防。
-            # 动态名额暂不接入；模拟层与真实层不分别维护两套配比。
+            # 根层和深推使用同一五档普通候选入口，普通池最多4点。
+            # 模拟层与真实层共用档位政策，缓存节点沿用旧边而不重新取点。
             # fallback 候选带 _candidate_score 真实分（dict 形态），
-            # rank_candidates 按分分配温度：强候选（冲四/活三成型点）推深。
+            # 综合分用于排序和路线质量，普通扣温不包含邻近/经验加分。
             # 叠加记忆经验修正（move_memory_bonus）：历史赢谱落点加分、
             # 败谱落点减分——记忆参与候选打分（8 对称归一化，见 memory.py）。
             mem_bonus = self._memory_bonus()
@@ -209,7 +216,7 @@ class Engine:
                 if (rr, cc) not in pts or s > pts[(rr, cc)]:
                     pts[(rr, cc)] = min(max(float(s) + mem_bonus.get((rr, cc), 0.0), 1.0), 100.0)
             # 第四次落子起，谱点只补入根候选；不改递归宽度、温度或五态排序。
-            # 使用原棋型综合分作为权重，不能把棋谱可信度直接当作高温度。
+            # 使用原综合分作为排序/路线权重，不能把棋谱可信度直接当作温度。
             book_move = self.opening_book.lookup(board, player)
             if book_move is not None:
                 self.opening_source = 'candidate'
@@ -228,42 +235,39 @@ class Engine:
             cand = {'type': 'fallback', 'reason': 'none', 'points': pts}
         result['part3_candidates'] = cand
         # 4. 深度推演结果
-        #   绝对必杀（my-five/opp-five，落子即胜/必堵）→ 直取第一，不深推；
-        #   VCF/双三/defense/fallback → 深推逐个打分（ranked 全返回）。
+        #   仅my-five落子即终局可跳过搜索；堵五保持原来第一个堵点并续推。
+        #   唯一候选只免选点比较，仍沿该点搜索，保留权重/欠温/子树。
         #   注意两处重构修复：
         #   a) defense 候选必须保留 dict 权重（100/80 驱动防守点推深）——9947a96
         #      曾转 list 等权 60 → dt(60)=67>T0 → 防守深推浅化、乱选（黑弱根因）；
         #   b) VCF/双三候选（列表无权重）补 100 权重——等权 60 同样推不动，
         #      浅推会漏杀/犹豫；深推验证后再落子。
         pts = cand['points']
-        if cand['type'] == 'direct' and cand.get('reason') in ('my-five', 'opp-five'):
+        if cand['type'] == 'direct' and cand.get('reason') == 'my-five':
             first = pts[0] if isinstance(pts, list) else next(iter(pts))
             result['part4_result'] = {
                 'type': 'direct',
                 'move': first,
                 'ranked': [self.deep_search._candidate_result(
                     first[0], first[1], 1e9,
-                    self.deep_search.STATE_WIN if cand['reason'] == 'my-five' else 0)],
+                    self.deep_search.STATE_WIN)],
             }
         else:
             if cand['type'] == 'direct' and isinstance(pts, list):
-                # my-vcf / my-d33：列表候选补高权重，深推验证真杀
-                pts = {p: 100.0 for p in pts}
-            if isinstance(pts, dict) and len(pts) == 1:
-                (r0, c0) = next(iter(pts))
-                result['part4_result'] = {
-                    'type': 'direct',
-                    'move': (r0, c0),
-                    'ranked': [self.deep_search._candidate_result(r0, c0, 1e9)],
-                }
-            else:
-                ranked = self._rank_search(board, pts, player, complete_scores)
-                best = ranked[0] if ranked else None
-                result['part4_result'] = {
-                    'type': 'searched',
-                    'move': (best['r'], best['c']) if best else None,
-                    'ranked': ranked,
-                }
+                if cand.get('reason') == 'opp-five':
+                    # 不改原来堵五直取的落点；多个成五点也不虚构可守。
+                    first = pts[0]
+                    pts = {first: tactical[first]}
+                else:
+                    # my-vcf / my-d33原来已用100权重，保持该语义。
+                    pts = {p: 100.0 for p in pts}
+            ranked = self._rank_search(board, pts, player, complete_scores)
+            best = ranked[0] if ranked else None
+            result['part4_result'] = {
+                'type': 'searched',
+                'move': (best['r'], best['c']) if best else None,
+                'ranked': ranked,
+            }
         return result
 
     # ---------- 普通对局记忆 ----------

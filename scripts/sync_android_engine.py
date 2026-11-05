@@ -47,6 +47,7 @@ CORE_FILES = (
     'deep_search.py',
     'opening_book.py',
     'opening_book_data.py',
+    'opening_book_front.py',  # opening_book 直接导入；漏了会在 Android 上 ImportError
     'engine.py',
 )
 

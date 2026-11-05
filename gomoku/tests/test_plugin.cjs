@@ -185,7 +185,9 @@ test('real Node to Python first request uses persistent engine and blocks forced
     assert.equal(move.r, 7)
     assert.equal(move.c, 8)
     assert.equal(move.ranked.length, 1)
-    assert.equal(move.ranked[0].score, 1e9)
+    // 堵五现在续推建树；桥接必须保留真实评分，不能再返回旧的直取占位值。
+    assert.equal(Number.isFinite(move.ranked[0].score), true)
+    assert.notEqual(move.ranked[0].score, 1e9)
   } finally {
     await Promise.all(h.children.map(child => new Promise(resolve => {
       if (child.exitCode !== null) return resolve()

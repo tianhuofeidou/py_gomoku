@@ -3,8 +3,9 @@
 # 职责：对候选点做多步递归推演，返回分支分最高的落子点
 #
 # 核心机制：
-#   - 温度银行：每个根候选从 T0 开始，沿每条路径按候选权重扣温
-#       DT = DT_M*((100-w)/100)^DT_POW + DT_N（权重高→耗温少）
+#   - 温度银行：普通步按落子方的纯棋型分扣温，综合候选分仍用于排序/路线权重
+#       w_type = TYPE_SCORE[落子前预测子类]/SCORE_MAX*100
+#       DT = DT_M*((100-w_type)/100)^DT_POW + DT_N
 #       战术前8手免耗温，之后按2/4/8梯度；温尽由战术预算规则停止，
 #       额外8手延伸默认关闭，实际硬胜败优先停止
 #   - 一层 = 本方+对方一个完整回合；候选与分数保留路径权重回溯，
@@ -12,7 +13,7 @@
 #   - 叶子评估：实际成五终局 ±1000；僵持叶子读当前棋盘两张状态表，
 #     按成五/强必杀/弱必杀优先级判定，其余全盘加和走平滑累进税
 #   - cache：按"已落子序列"缓存分支分，序列前缀复用（同序列只推一次）；
-#       真实换根后的旧叶子按权重、分数绝对值和深度调节续推温度
+#       真实换根后的旧叶子按当前根距离拨温，每4手减半，旧欠温继续抵扣
 #
 # TODO（骨架保留，本次结构整理未实现）：
 #   - 分支定界：UB/LB 剪枝（先深推一枝拿标杆，砍追不上的枝）
@@ -35,18 +36,17 @@ class DeepSearch:
     供 engine 的 compute_move / analyze_turn 调用。"""
 
     # 温度参数（结构：幂函数降温，参数交给 GA 寻优）
-    # 本机实测（24 个 KataGo 中盘局面单步耗时）：80→avg 0.30s(最慢 1.2s)、
-    # 160→avg 3.08s(最慢 17.2s)、240→avg 15.2s(最慢 97.1s)。
-    # 更早用 3 个局面测过 320：复杂局面 90s+ 仍未完成 → 档位定稿 80/160/240。
-    T0 = 160.0            # 路径初始温度（默认标准档，GUI 可切 80/160/240；不是全局节点额度）
-    DT_M = 400.0           # 单层耗温系数 DT = DT_M*((100-w)/100)^DT_POW + DT_N
+    # 旗舰默认：冷启动160/120，普通耗温系数200，根最低三层；GUI不再分三档。
+    T0 = 160.0            # 直接DeepSearch调用预算；跨回合拨温独立设置，不是全局节点额度。
+    DT_M = 200.0           # 普通步耗温系数；战术仍走独立免费额度/梯度规则。
     DT_POW = 2.0           # 幂次：控制曲线形状（GA 可调）
     DT_N = 3.0             # 基础耗温
+    MIN_SEARCH_PLIES = 3   # 当前根最低三手仅豁免温度停止，不免扣温；实验可设0关闭。
     CAND_N_FULL = 5       # 兼容普通候选请求上界；战术候选不按此值截断。
     TACTICAL_BATCH_SIZE = 3  # 当前发布候选：每节点先展开前3个战术候选，其余保留pending。
     OPENING_COLD_T0 = 160.0
     MIDDLE_COLD_T0 = 120.0
-    CAND_N_ORDINARY = 4   # 根层与内部普通候选统一2攻2防、最多4点。
+    CAND_N_ORDINARY = 4   # 根层与内部共用五档攻防配额，普通池最多4点。
     # 当前发布候选：前8手战术免费，之后按2/4/8梯度；普通步仍按原公式扣温。
     # 显式None只用于回退到旧的“战术全程免费”实验口径。
     TACTICAL_FREE_PLIES = 8
@@ -91,17 +91,11 @@ class DeepSearch:
     #   sign(D) * (r*|D| + (1-r)*S*(1 - exp(-|D|/S)))
     PRUNE_W = 0.02                 # 剪枝阈值：分支绝对路径权重低于此值不往下推（至少保留最强一支）
     GEAR_OPP_COEF = {1: 1.2, 2: 1.1, 3: 1.0, 4: 0.9}  # 攻防档位系数：乘在对手全盘和上
-    # 跨回合叶子续推策略：只调节旧叶子的恢复温度，不改变本步原有耗温。
-    # 这些参数保持独立，便于后续离线拟合；硬结论和实际成五不进入续推。
+    # 跨回合拨温：64 * 2^(-当前根深度/4)，与旧欠温相加，负数仍保留。
+    # 权重只作原有准入限制，不额外加温；硬结论和实际成五不进入续推。
     CONTINUE_W_MIN = 0.10
-    CONTINUE_DEPTH_STOP = 8.0
-    CONTINUE_WEIGHT_GAIN = 8.0
-    CONTINUE_WEIGHT_POW = 1.5
-    CONTINUE_SCORE_GAIN = 16.0
-    CONTINUE_SCORE_POW = 1.5
-    CONTINUE_DEPTH_PENALTY = 24.0
-    CONTINUE_DEPTH_POW = 2.0
-    CONTINUE_T_MAX = 40.0
+    CONTINUE_BASE = 64.0
+    CONTINUE_HALF_DEPTH = 4.0
     THREAT_BONUS_WHITE = 100.0   # （遗留常量，不再用于叶子分）
     THREAT_BONUS_BLACK = 50.0    # （遗留常量，不再用于叶子分）
 
@@ -125,10 +119,11 @@ class DeepSearch:
                              turn=player, reason=reason, points=items, cached=cached)
         return items
 
-    def _debug_step(self, node, before, after, weight, tactical, count):
+    def _debug_step(self, node, before, after, weight, tactical, count, *, cost_weight=None):
         if self._debug_observer is not None:
             self._debug_emit('temperature', node, temperature_before=before,
                              temperature=after, cost=before-after, weight=weight,
+                             cost_weight=weight if cost_weight is None else cost_weight,
                              tactical=tactical, tactical_count=count,
                              extension_state=self._extension_state(node=node))
 
@@ -165,7 +160,7 @@ class DeepSearch:
                     tactical_count=0, extension_state=(0, 0, 0), contribution_unit=None,
                     contribution_complete=False, contribution_leaves=0,
                     pending_edges=(), batch_epoch=-1, batch_moves=(),
-                    branch_temperature=None)
+                    branch_temperature=None, gear_context=None)
 
     def advance_search_cache(self, board, r, c, player):
         """只在真实落子后换根；未命中就清掉旧树，模拟落子不调用这里。"""
@@ -174,6 +169,7 @@ class DeepSearch:
         node = (self._tree_root['children'].get((r, c, player))
                 if self._tree_root is not None else None)
         self._tree_root = (node if node is not None and node['board'] == key
+                           and node.get('gear_context') in (None, self.search._gear_context())
                            else self._new_tree_node(key))
         self._tree_root['mover'] = player
         if self._debug_observer is not None:
@@ -190,18 +186,20 @@ class DeepSearch:
         weights = tuple((name, repr(value)) for name, value in vars(search_module).items()
                         if name.isupper())
         methods = (self._candidate_points, self._leaf_score_impl, self._check_win,
-                   self.search.tactical_candidates, self.search._defense_candidates)
+                   self._pattern_temperature_weight,
+                   self.search.tactical_candidates, self.search._defense_candidates,
+                   self.search._ordinary_candidates, self.search._gear_threats)
         return constants, weights, methods
 
     def _initial_temperature(self):
-        """根建树预算与续温信用分开；直接DeepSearch调用仍使用T0。"""
+        """根建树预算与跨回合拨温分开；直接DeepSearch调用仍使用T0。"""
         return float(self.T0 if self._cold_temperature is None else self._cold_temperature)
 
     def _begin_search_cache(self, board, trace):
         self._cold_results = None
         self.cache_stats = dict.fromkeys(self.cache_stats, 0)
         # 路径表达式记录器和替换过的评分器不能冒充纯局面评估。
-        self._cache_credit = float(self.T0)
+        self._cache_credit = float(self.CONTINUE_BASE)
         self._reuse_active = (type(self) is DeepSearch and not trace
                               and '_leaf_score_impl' not in self.__dict__)
         if not self._reuse_active:
@@ -211,8 +209,10 @@ class DeepSearch:
         if signature != self._tree_signature:
             self._tree_root = None
             self._tree_signature = signature
-        if self._tree_root is None or self._tree_root['board'] != key:
+        if (self._tree_root is None or self._tree_root['board'] != key
+                or self._tree_root.get('gear_context') not in (None, self.search._gear_context())):
             self._tree_root = self._new_tree_node(key)
+        self._tree_root['gear_context'] = self.search._gear_context()
         self._cache_positions = {key: self._tree_root}
         self._cache_paths = {(): self._tree_root}
         root = self._tree_root
@@ -251,6 +251,7 @@ class DeepSearch:
                 position[name].update(node[name])
                 node[name] = position[name]
         node['mover'] = branch[-1][2]
+        node['gear_context'] = self.search._gear_context()
         self._cache_positions[key] = node
         self._cache_paths[path] = node
         if self._debug_observer is not None:
@@ -259,7 +260,8 @@ class DeepSearch:
         return node
 
     def _history_key(self):
-        return tuple(tuple(self.search.zero_history[p]) for p in (BLACK, WHITE))
+        return (tuple(tuple(self.search.zero_history[p]) for p in (BLACK, WHITE)),
+                self.search._gear_context())
 
     def _tactical_result(self, board, player):
         node = self._position_node(board)
@@ -273,12 +275,14 @@ class DeepSearch:
             node['tactical'][player] = (reason, tuple(points.items()))
         return reason, points
 
-    def _resume_temperature(self, node, player, temperature, *, before_move=False):
+    def _resume_temperature(self, node, player, temperature, *, depth, before_move=False):
         if node is None:
             return temperature
         if node['resume_epoch'] != self._tree_epoch:
             node['resume_epoch'] = self._tree_epoch
-            node['resume_source'] = node['frontier']
+            # 保留本轮拨温前快照，后续写回欠温不能改变同轮memo的原始依据。
+            node['resume_source'] = (dict(node['frontier'])
+                                     if node['frontier'] is not None else None)
             node['resume_values'] = {}
             node['resume_blocked'] = False
             node['resume_blocked_key'] = None
@@ -289,15 +293,21 @@ class DeepSearch:
             return temperature
         key = (player, before_move)
         if key not in node['resume_values']:
-            # 旧末端以前的步骤已计算过，直接从该局面拨入本轮温度，不重复扣旧前缀。
-            resumed, blocked = self._continuation_temperature(old)
+            # 用当前根距离而非保存时旧深度拨温，不重扣已计算的旧前缀。
+            resumed, blocked = self._continuation_temperature(old, depth=depth)
             node['resume_values'][key] = resumed
             node['resume_blocked'] = blocked
             node['resume_blocked_key'] = key
+            if not blocked:
+                # 即使本轮仍欠温且没有新展开，也保存还款后的余额及当前根深度。
+                # 新epoch可继续偿还；同epoch仍读resume_values，不重复领取拨温。
+                node['frontier'] = dict(old, temperature=resumed, depth=int(depth),
+                                        epoch=self._tree_epoch)
             self.cache_stats['frontier_resumes'] += 1
             if self._debug_observer is not None:
                 self._debug_emit('resume', node, old_temperature=old['temperature'],
-                                 temperature=resumed, round_t0=self._cache_credit,
+                                 temperature=resumed, round_t0=float(self.T0),
+                                 continuation_base=self._cache_credit, current_depth=depth,
                                  blocked=blocked, before_move=before_move,
                                  path_weight=old['path_weight'], old_score=old['score'],
                                  old_depth=old['depth'], tactical_count=old['tactical_count'])
@@ -308,31 +318,23 @@ class DeepSearch:
         return bool(node is not None and node.get('resume_blocked')
                     and node.get('resume_blocked_key') == (player, before_move))
 
-    def _continuation_temperature(self, frontier):
-        """按旧叶子信息计算跨回合续推温度及是否硬门槛截断。
+    def _continuation_temperature(self, frontier, *, depth):
+        """按当前根深度拨温并抵扣旧欠温，返回(有符号温度, 硬门槛阻断)。
 
-        state=0、+2、-2 使用同一套权重/评分/深度公式；+1/-1 或终局缓存
-        直接复用，不再续推。返回 (temperature, blocked)。
+        state=0、+2、-2同公式，评分不再额外加温；+1/-1或终局直接复用。
+        不按旧根深度停在第8层，不截到40，也不把尚未还清的欠温抹成0。
         """
         state = int(frontier.get('state', self.STATE_NONE))
         if (state in (self.STATE_WIN, self.STATE_LOSE) or frontier.get('terminal')
                 or self._extension_limit_reached(frontier.get('extension_state', (0, 0, 0))[0])):
             return 0.0, True
         weight = min(max(float(frontier.get('path_weight', 0.0)), 0.0), 1.0)
-        depth = max(0.0, float(frontier.get('depth', 0.0)))
-        if weight < self.CONTINUE_W_MIN or depth >= self.CONTINUE_DEPTH_STOP:
+        if weight < self.CONTINUE_W_MIN:
             return 0.0, True
-        base = max(0.0, self._cache_credit + min(0.0, float(frontier.get('temperature', 0.0))))
-        score = abs(float(frontier.get('score', 0.0) or 0.0))
-        score_norm = min(score / self.WIN_SCORE, 1.0)
-        weight_norm = ((weight - self.CONTINUE_W_MIN)
-                       / max(1e-12, 1.0 - self.CONTINUE_W_MIN))
-        depth_norm = depth / self.CONTINUE_DEPTH_STOP
-        value = (base
-                 + self.CONTINUE_WEIGHT_GAIN * (weight_norm ** self.CONTINUE_WEIGHT_POW)
-                 + self.CONTINUE_SCORE_GAIN * (score_norm ** self.CONTINUE_SCORE_POW)
-                 - self.CONTINUE_DEPTH_PENALTY * (depth_norm ** self.CONTINUE_DEPTH_POW))
-        return min(max(value, 0.0), self.CONTINUE_T_MAX), False
+        depth = max(0.0, float(depth))
+        grant = float(self.CONTINUE_BASE) * 2.0 ** (-depth / self.CONTINUE_HALF_DEPTH)
+        debt = min(0.0, float(frontier.get('temperature', 0.0)))
+        return debt + grant, False
 
     def _remember_frontier(self, node, player, temperature, path_weight, *,
                            before_move=False, depth=0, score=None, state=0,
@@ -358,9 +360,10 @@ class DeepSearch:
             node['frontier']['state'] = int(state)
 
     def _result_key(self, player, main_player, temperature, path_weight, tactical_count=0,
-                    extension_state=(0, 0, 0)):
+                    extension_state=(0, 0, 0), *, depth=None):
         return (player, main_player, float(temperature), float(path_weight),
-                self._history_key(), tactical_count, tuple(extension_state))
+                self._history_key(), tactical_count, tuple(extension_state),
+                max(0, self.MIN_SEARCH_PLIES - depth) if depth is not None else 0)
 
     def _cold_result_key(self, board, player, opp, main_player, temperature,
                          path_weight, depth, tactical_count=0, extension_state=(0, 0, 0)):
@@ -442,7 +445,8 @@ class DeepSearch:
         reason, tactical = self._tactical_result(board, player)
         edges = tuple((r, c, player, w,
                        temperature - self._path_temperature_cost(
-                           w, (r, c) in tactical, node['tactical_count'], temperature),
+                           (w if (r, c) in tactical else self._pattern_temperature_weight(player, r, c)),
+                           (r, c) in tactical, node['tactical_count'], temperature),
                        path_weight) for path_weight, r, c, w in items)
         previous = node['edges']
         if previous is None:
@@ -717,6 +721,7 @@ class DeepSearch:
                 or '_leaf_score_impl' in self.__dict__ or node is None
                 or node['board'] != self._position_key(board)
                 or node['main_player'] != player
+                or node.get('gear_context') not in (None, self.search._gear_context())
                 or (node['edges'] is None and node['frontier'] is None)
                 or self._tree_signature != self._reuse_signature()):
             return None
@@ -788,7 +793,7 @@ class DeepSearch:
             if frontier['epoch'] >= self._tree_epoch:
                 return value
             temperature = self._resume_temperature(node, frontier['player'],
-                frontier['temperature'], before_move=frontier['before_move'])
+                frontier['temperature'], depth=len(branch), before_move=frontier['before_move'])
             if self._resume_blocked(node, frontier['player'], before_move=frontier['before_move']):
                 node['continued_epoch'] = self._tree_epoch
                 return value
@@ -876,7 +881,8 @@ class DeepSearch:
         """本方刚落子的叶子从对方应手处展开，不重走此前路径或重扣旧步温度。"""
         opp = 3-main_player
         if self._temperature_exhausted(board, opp, temperature, node['tactical_count'],
-                                       extension_count=self._extension_state(contexts, node)[0]):
+                                       extension_count=self._extension_state(contexts, node)[0],
+                                       depth=len(branch)):
             if node['move_result'] is not None and node['move_result']['complete']:
                 node['continued_epoch'] = self._tree_epoch
                 return
@@ -938,8 +944,8 @@ class DeepSearch:
 
     @staticmethod
     def _dt(w):
-        """单层耗温：DT = DT_M*((100-w)/100)^DT_POW + DT_N（w 为候选权重 50~100）。
-        权重高（强手）→ DT 小 → 温度剩多 → 推得深；权重低 → DT 大 → 浅推。
+        """普通步耗温：DT = DT_M*((100-w)/100)^DT_POW + DT_N（纯棋型权重0~100）。
+        不接受邻近/攻防一体的综合分；棋型权重高→耗温少，权重低→浅推。
         幂函数让 100 与 80 差异小、80 与 60 差异明显，形状由 DT_POW 控制。"""
         x = max(100.0 - float(w), 0.0) / 100.0
         return DeepSearch.DT_M * (x ** DeepSearch.DT_POW) + DeepSearch.DT_N
@@ -962,7 +968,7 @@ class DeepSearch:
         return points
 
     def _temperature_cost(self, weight, is_tactical):
-        """只有落子前属于当前战术候选的实际走法免费；不看落子后的潜力。"""
+        """基础耗温；普通weight须为纯棋型分，战术实际收费由路径梯度覆盖。"""
         return 0.0 if is_tactical else self._dt(weight)
 
     def _extension_limit_reached(self, count):
@@ -1043,8 +1049,25 @@ class DeepSearch:
                     len(self.TACTICAL_COSTS) - 1)
         return self.TACTICAL_COSTS[stage]
 
+    def _pattern_temperature_weight(self, player, r, c):
+        """落子前读取该方落下后的预测棋型，归一化后仅用于普通扣温。
+
+        防守点同样看实际落子方，而非对方威胁方；无对应棋型基础分时为0。
+        综合候选分、邻近加分和攻防一体奖励不进入耗温，原排序/剪枝仍保留。
+        """
+        sub = self._sub_at(player, r, c)
+        raw = float(search_module.TYPE_SCORE.get(sub, 0.0))
+        return max(0.0, min(100.0, raw / search_module.SCORE_MAX * 100.0))
+
+    def _minimum_depth_pending(self, depth):
+        """深度按本次搜索根后的真实落子数计算，不从每个旧叶子重新计三手。"""
+        limit = self.MIN_SEARCH_PLIES
+        if type(limit) is not int or not 0 <= limit <= 225:
+            raise ValueError('MIN_SEARCH_PLIES须为0..225的整数')
+        return depth is not None and depth < limit
+
     def _temperature_exhausted(self, board, turn, temperature, count, blocked=False,
-                               extension_count=0):
+                               extension_count=0, *, depth=None):
         # 正温阶段永远由梯度温度负责；不能把正温战术链误判成8手延伸。
         if temperature > 0:
             return False
@@ -1056,6 +1079,9 @@ class DeepSearch:
             return False
         if self._extension_limit_reached(extension_count):
             return True
+        if not blocked and self._minimum_depth_pending(depth):
+            # 仅暂缓温度结束；每步仍按原公式扣温，欠温保留，其他门槛不变。
+            return False
         if self.TACTICAL_FREE_PLIES is None:
             return blocked or not reason
         # None 是已有的“关闭8手延伸”内部对照：保持旧梯度截断。
@@ -1500,8 +1526,8 @@ class DeepSearch:
         """生成当前落子方的带权候选，普通候选不再区分根层和内部层。
 
         战术档先生成全部候选，实际边由_cache_edges按3点分批保留pending；
-        普通候选固定2攻2防、最多4点。战术优先级与顺序沿原规则。
-        所有权重保留真实综合分，用于温度与路径质量，不直接加进叶子分。
+        普通候选按五档分配攻防、最多4点。战术优先级与顺序沿原规则。
+        所有候选权重保留真实综合分用于排序与路径质量；普通扣温另读纯棋型分。
         """
         n = min(n, self.CAND_N_FULL)
         reason, tactical = self._tactical_result(board, player)
@@ -1511,12 +1537,12 @@ class DeepSearch:
                 [(r, c, w) for (r, c), w in tactical.items()], reason)
         n = min(n, self.CAND_N_ORDINARY)
         node = self._position_node(board)
-        candidate_key = player
+        candidate_key = (player, self.search._gear_context())
         if node is not None and candidate_key in node['candidates']:
             self.cache_stats['candidate_hits'] += 1
             return self._debug_candidates(board, player,
                 list(node['candidates'][candidate_key][:n]), None, cached=True)
-        # 共用入口固定2攻2防，不能截取另一套攻防候选。
+        # 候选纯局面缓存须区分历史档位；已有路径edges仍原样复用。
         fb = self.search._ordinary_candidates(board, player=player, with_score=True)
         # clamp保持原温度语义：避免超过100后平方耗温反而增大。
         w_lst = self._ordered_candidates(board, player,
@@ -1531,7 +1557,7 @@ class DeepSearch:
         temp/depth：该步的剩余温度与已推层数。"""
         cand_ws = [float(x) for x in (cand_ws or [])]
         kill = any(cw >= 100 for cw in cand_ws)
-        gear = 0 if kill else self.search._target_gear(board, player)
+        gear = 0 if kill else self.search._ordinary_gear(player)
         return {
             'camp': 1 if player == main_player else 0,
             'move_w': float(w),
@@ -1564,7 +1590,8 @@ class DeepSearch:
         extension_state = self._extension_state(ctx_branch, node)
         if node is not None:
             node['extension_state'] = extension_state
-        result_key = self._result_key(player, main_player, temp, path_w, tactical_count, extension_state)
+        result_key = self._result_key(player, main_player, temp, path_w, tactical_count, extension_state,
+                                      depth=len(branch))
         if node is not None:
             if node['result_epoch'] != self._tree_epoch:
                 node['results'] = {}
@@ -1618,8 +1645,8 @@ class DeepSearch:
 
     def _recursive_impl(self, board, player, opp, main_player, temp, branch, ctx_branch, cache, trace=False, indent=0, path_w=1.0):
         """递归推演：player 落一子（候选）→ opp 应一手 → 递归下一层。
-        默认温度耗尽后仍续推战术棋、无8手上限；普通步停止，硬态优先终止。
-        仅落子前属于当前战术候选的实际走法免温；不以落子后的潜力追溯免温。
+        默认当前根最低三层内只暂缓温度停止，仍扣温；达到后按原战术预算停止。
+        战术免费/梯度身份取落子前候选，不以落子后的潜力追溯免温；硬态优先。
         本方落子后按下一方战术reason决定续推；下一轮本方落子前同样检查，实际成五优先终局。
         模拟落子后同步更新状态表（journal 哈希表回滚），保证候选点/必杀检测
         基于当前分支的真实棋盘，而不是进入深推前的过期状态表。
@@ -1636,12 +1663,12 @@ class DeepSearch:
             return cache[key]
         entry_node = self._position_node(board)
         tactical_count = self._tactical_count(ctx_branch, entry_node)
-        # 对方已落子时先查预算与本方战术身份，禁止负温度下补普通步。
+        # 对方落子后先查预算；可选根最低深度只豁免温度停止，不免扣温。
         # 新的落子前末端单独标相位，沿用真实换根后的既有欠温续算公式。
-        temp = self._resume_temperature(entry_node, player, temp, before_move=True)
+        temp = self._resume_temperature(entry_node, player, temp, depth=len(branch), before_move=True)
         if self._temperature_exhausted(board, player, temp, tactical_count,
                 self._resume_blocked(entry_node, player, before_move=True),
-                self._extension_state(ctx_branch, entry_node)[0]):
+                self._extension_state(ctx_branch, entry_node)[0], depth=len(branch)):
             value = self._cutoff_leaf(board, entry_node, branch, ctx_branch, player,
                                       player, temp, path_w, before_move=True)
             cache[key] = (value, 0, 0, 0, 1, 0, ())
@@ -1680,6 +1707,7 @@ class DeepSearch:
             ctx['tactical_count'] = self._advance_tactical_count(tactical_count, is_tactical)
             self._prepare_extension_step(ctx, board, player, temp, is_tactical,
                                          self._extension_state(ctx_branch, entry_node))
+            cost_weight = w if is_tactical else self._pattern_temperature_weight(player, r, c)
             board[r][c] = player
             branch.append((r, c, player, w))
             ctx_branch.append(ctx)
@@ -1690,9 +1718,10 @@ class DeepSearch:
             self._save_extension_state(tree_node, ctx)
             if tree_node is not None:
                 tree_node['tactical_count'] = ctx['tactical_count']
-            temp_after = temp - self._path_temperature_cost(w, is_tactical, tactical_count, temp)
-            self._debug_step(tree_node, temp, temp_after, w, is_tactical, ctx['tactical_count'])
-            temp_after = self._resume_temperature(tree_node, player, temp_after)
+            temp_after = temp - self._path_temperature_cost(cost_weight, is_tactical, tactical_count, temp)
+            self._debug_step(tree_node, temp, temp_after, w, is_tactical, ctx['tactical_count'],
+                             cost_weight=cost_weight)
+            temp_after = self._resume_temperature(tree_node, player, temp_after, depth=len(branch))
             if trace:
                 print('  ' * indent + '+- %s落%s%d w=%g t=%g' % (
                     'W' if player == WHITE else 'B', 'ABCDEFGHIJKLMNO'[c], r + 1, w, temp))
@@ -1708,7 +1737,7 @@ class DeepSearch:
                     print('  ' * indent + '   -> WIN %g' % score)
             elif self._temperature_exhausted(board, opp, temp_after, ctx['tactical_count'],
                                                self._resume_blocked(tree_node, player),
-                                               ctx['extension_state'][0]):
+                                               ctx['extension_state'][0], depth=len(branch)):
                 # 普通候选或实验战术免费额度耗尽时，在当前盘面结算预算叶子。
                 ctx['fatal'] = 1 if self._has_forcing_threat(player) else 0
                 score = self._cutoff_leaf(board, tree_node, branch, ctx_branch, player,
@@ -1756,8 +1785,9 @@ class DeepSearch:
                         if board[or_][oc] != EMPTY:
                             continue
                         opp_is_tactical = (or_, oc) in opp_tactical_points
+                        cost_weight = ow if opp_is_tactical else self._pattern_temperature_weight(opp, or_, oc)
                         temp2 = temp_after - self._path_temperature_cost(
-                            ow, opp_is_tactical, ctx['tactical_count'], temp_after)
+                            cost_weight, opp_is_tactical, ctx['tactical_count'], temp_after)
                         ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
                                                cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         ctx_b['tactical_count'] = self._advance_tactical_count(
@@ -1775,7 +1805,7 @@ class DeepSearch:
                         if reply_node is not None:
                             reply_node['tactical_count'] = ctx_b['tactical_count']
                         self._debug_step(reply_node, temp_after, temp2, ow,
-                                         opp_is_tactical, ctx_b['tactical_count'])
+                                         opp_is_tactical, ctx_b['tactical_count'], cost_weight=cost_weight)
                         opp_won = self._check_win(board, or_, oc, opp)
                         ctx_b['fatal'] = 1 if (opp_won or self._has_forcing_threat(opp)) else 0
                         if opp_won:
@@ -1789,7 +1819,7 @@ class DeepSearch:
                             if trace:
                                 print('  ' * indent + '   -> B应%s%d LOSE %g' % ('ABCDEFGHIJKLMNO'[oc], or_ + 1, child))
                         else:
-                            # 回到本方待走入口；耗温尽时只放行零耗温战术着法。
+                            # 回本方待走入口，统一处理预算及可选最低根深度。
                             child, st, cw2, cl2, ct2, new_st, next_states = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, indent + 1, path_w=reply_path_w)
                             opp_states.append(-st)   # 递归返回 player 视角 → 投影到 opp 视角
                             grandchild_states.extend(next_states)
@@ -1952,7 +1982,7 @@ class DeepSearch:
             w = points.get((r, c), 60.0) if isinstance(points, dict) else 60.0
             is_tactical = (r, c) in tactical_points
             entry_node = self._position_node(board)
-            entry_temp = self._resume_temperature(entry_node, player, t0, before_move=True)
+            entry_temp = self._resume_temperature(entry_node, player, t0, depth=0, before_move=True)
             tactical_count = self._tactical_count([], entry_node)
             direct_win = (self.TACTICAL_FREE_PLIES is not None
                           and self._tactical_result(board, player)[0] == 'my-five'
@@ -1960,7 +1990,10 @@ class DeepSearch:
             if (not direct_win and
                     (self._extension_limit_reached(self._extension_state([], entry_node)[0])
                      or entry_temp <= 0 and (self._resume_blocked(entry_node, player, before_move=True)
-                                     or self._path_temperature_cost(w, is_tactical, tactical_count, entry_temp) > 0))):
+                                     or (self._path_temperature_cost(
+                                         (w if is_tactical else self._pattern_temperature_weight(player, r, c)),
+                                         is_tactical, tactical_count, entry_temp) > 0
+                                         and not self._minimum_depth_pending(0))))):
                 # 外部传入的根候选也不能靠权重100冒充零耗温战术步。
                 value = self._cutoff_leaf(board, entry_node, [], [], player, player,
                                           entry_temp, 1.0, before_move=True)
@@ -1977,6 +2010,7 @@ class DeepSearch:
             ctx['tactical_count'] = self._advance_tactical_count(tactical_count, is_tactical)
             self._prepare_extension_step(ctx, board, player, entry_temp, is_tactical,
                                          self._extension_state([], entry_node))
+            cost_weight = w if is_tactical else self._pattern_temperature_weight(player, r, c)
             board[r][c] = player
             branch = [(r, c, player, w)]
             ctx_branch = [ctx]
@@ -1987,9 +2021,10 @@ class DeepSearch:
             self._save_extension_state(tree_node, ctx)
             if tree_node is not None:
                 tree_node['tactical_count'] = ctx['tactical_count']
-            temp_after = entry_temp - self._path_temperature_cost(w, is_tactical, tactical_count, entry_temp)
-            self._debug_step(tree_node, entry_temp, temp_after, w, is_tactical, ctx['tactical_count'])
-            temp_after = self._resume_temperature(tree_node, player, temp_after)
+            temp_after = entry_temp - self._path_temperature_cost(cost_weight, is_tactical, tactical_count, entry_temp)
+            self._debug_step(tree_node, entry_temp, temp_after, w, is_tactical, ctx['tactical_count'],
+                             cost_weight=cost_weight)
+            temp_after = self._resume_temperature(tree_node, player, temp_after, depth=len(branch))
             if trace:
                 print('== cand: %s%d w=%g' % ('ABCDEFGHIJKLMNO'[c], r + 1, w))
             if self._check_win(board, r, c, player):
@@ -2003,7 +2038,7 @@ class DeepSearch:
                     print('   -> direct WIN %g' % val)
             elif self._temperature_exhausted(board, opp, temp_after, ctx['tactical_count'],
                                                self._resume_blocked(tree_node, player),
-                                               ctx['extension_state'][0]):
+                                               ctx['extension_state'][0], depth=len(branch)):
                 # 根层与递归同源：按下一方是否命中战术直接取点分支决定续推。
                 ctx['fatal'] = 1 if self._has_forcing_threat(player) else 0
                 val = self._cutoff_leaf(board, tree_node, branch, ctx_branch, player,
@@ -2049,8 +2084,9 @@ class DeepSearch:
                         if board[or_][oc] != EMPTY:
                             continue
                         opp_is_tactical = (or_, oc) in opp_tactical_points
+                        cost_weight = ow if opp_is_tactical else self._pattern_temperature_weight(opp, or_, oc)
                         temp2 = temp_after - self._path_temperature_cost(
-                            ow, opp_is_tactical, ctx['tactical_count'], temp_after)
+                            cost_weight, opp_is_tactical, ctx['tactical_count'], temp_after)
                         ctx_b = self._make_ctx(board, opp, main_player, ow, opp_cand_ws,
                                                cand_pts=opp_pts, temp=temp2, depth=len(branch))
                         ctx_b['tactical_count'] = self._advance_tactical_count(
@@ -2068,7 +2104,7 @@ class DeepSearch:
                         if reply_node is not None:
                             reply_node['tactical_count'] = ctx_b['tactical_count']
                         self._debug_step(reply_node, temp_after, temp2, ow,
-                                         opp_is_tactical, ctx_b['tactical_count'])
+                                         opp_is_tactical, ctx_b['tactical_count'], cost_weight=cost_weight)
                         opp_won = self._check_win(board, or_, oc, opp)
                         ctx_b['fatal'] = 1 if (opp_won or self._has_forcing_threat(opp)) else 0
                         if opp_won:
@@ -2081,7 +2117,7 @@ class DeepSearch:
                             if trace:
                                 print('   -> B resp %s%d LOSE %g' % ('ABCDEFGHIJKLMNO'[oc], or_ + 1, child))
                         else:
-                            # 回到本方待走入口；普通候选不再获得一次补走机会。
+                            # 回本方待走入口；最低深度不能在每个旧叶子重新领取。
                             child, st, cw2, cl2, ct2, new_st, next_states = self._recursive(board, player, opp, main_player, temp2, branch, ctx_branch, cache, trace, 1, path_w=oq)
                             opp_states.append(-st)   # 递归返回 player 视角 → 投影到 opp 视角
                             grandchild_states.extend(next_states)

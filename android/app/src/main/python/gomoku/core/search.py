@@ -4,7 +4,7 @@
 #   1. 维护黑白状态表（全量 15×15，每格 18 子类编号 0-17）
 #   2. 落子后按棋段区做局部增量更新
 #   3. 候选点生成：按检测优先级分类（5连/活四/VCF/双三）+ 防守反推
-#   4. 无必杀时兜底：3攻2防（棋型分 + 邻近度 + 攻防一体 平滑评分）
+#   4. 无必杀时兜底：五档动态攻防、普通池最多4点（同一评分/去重策略）
 #
 # 依赖：pattern（棋型分析）、utils（棋盘常量）
 # 被 deep_search（取候选/应手）与 engine（决策编排）依赖
@@ -151,9 +151,9 @@ TYPE_SCORE = {
 }
 
 # ============================================================
-# 动态攻防配比（无必杀兜底时使用）
+# 旧四档压力辅助（保留叶子评分与旧查询口径；普通候选使用下方五档政策）
 #   档位 1-4：4攻1防 / 3攻2防 / 2攻3防 / 1攻4防
-#   GEAR_ENABLED=False 时回退固定 3攻2防（深推内部 / 黑应手保持固定）
+#   以下四档仅用于旧辅助查询；正式普通候选见 ORDINARY_GEAR_PROFILE。
 #   压力只看 1 级(THREAT) 与 2 级(POTEN)，0 级由上层必杀判定单独处理；
 #   历史 0 级事件作为“杀势动量”参与档位切换。
 # ============================================================
@@ -181,6 +181,13 @@ GEAR_W_ZERO = 5.0
 GEAR_ZERO_WINDOW = 10
 # 档位阈值（score = 当前压力差 + 历史动量）
 GEAR_THRESHOLDS = (2.0, -1.0, -3.0)   # score>=t1→4档；t2<=score<t1→3档；t3<=score<t2→2档；score<t3→1档
+
+# 普通候选的新五档政策；旧四档压力参数仅保留给叶子评估/旧辅助查询。
+ORDINARY_GEAR_PROFILE = {1: (0, 4), 2: (1, 3), 3: (2, 2), 4: (3, 1), 5: (4, 0)}
+GEAR_PROGRESS_LIMIT = 100
+# 状态表描述“下一空点落下后的棋型”：0对应已有冲四，1对应已有活三。
+GEAR_THREAT_POINTS = {0: 30, 1: 40, 2: 100, 3: 80, 4: 60}
+ORDINARY_POLICY = 'five-gears-new-threat-progress-v1'
 
 
 class SearchScope:
@@ -286,11 +293,13 @@ class Search:
             BLACK: [[5] * len(DIRECTIONS) for _ in range(SIZE * SIZE)],
             WHITE: [[5] * len(DIRECTIONS) for _ in range(SIZE * SIZE)],
         }
-        # 动态攻防配比状态：黑白各自独立，避免机机对战时互相污染
+        # 五档状态属于当前路径；黑白视角互补，不能各自漂移。
         self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
         # 历史 0 级事件用普通 list，窗口大小动态读 GEAR_ZERO_WINDOW（GA 可调）
         self.zero_history = {BLACK: [], WHITE: []}
         self.zero_active = {BLACK: False, WHITE: False}   # 防同一杀势连续多步重复计数
+        self.gear_progress = {BLACK: 0, WHITE: 0}
+        self._gear_active = {BLACK: frozenset(), WHITE: frozenset()}
 
     # ---------- 增量刷新状态表 ----------
 
@@ -303,14 +312,20 @@ class Search:
 
         journal：可选哈希表，记录本次更新中“首次被修改格子”的旧值，
                  用于深推模拟后的状态表回滚。
-        record_history：是否记录历史 0 级/档位等真实对局状态；
-                        深推模拟时应传 False，避免污染真实历史。
+        record_history：是否记录旧叶子评分使用的真实0级历史；模拟传False。
+                        五档进度在真实/模拟路径均推进，模拟必须用journal恢复。
         """
+        # 模拟也推进本分支的档位，restore时恢复；不能把真实根档位套给后代。
+        if journal is not None:
+            journal.setdefault((id(self), -1, -1),
+                               (self.gear.copy(), self.gear_progress.copy(),
+                                self._gear_active.copy()))
         # 落子点已占：双方状态表立即置无用，日志保留旧值供模拟回滚。
         self._write_state(self.sb, r, c, 17, journal)
         self._write_state(self.sw, r, c, 17, journal)
         region = self.scope._both_segment_scope(board, r, c)
         self._update(board, region, r, c, journal)
+        self._record_gear_threats(board, player)
         # 每个真实棋步更新双方杀势及历史窗口，同一杀势持续存在只计一次。
         # 深推模拟不记录，避免假设棋步污染真实历史。
         if record_history:
@@ -329,12 +344,15 @@ class Search:
         state[r][c] = new_val
 
     def restore(self, journal):
-        """成对恢复 18 子类表和方向缓存；journal 的键由表身份区分。"""
+        """成对恢复子类表、方向缓存和五档进度；journal的键由对象身份区分。"""
         tables = {id(table): table for table in (
             self.sb, self.sw,
             self._direction_levels[BLACK], self._direction_levels[WHITE])}
         for (sid, r, c), old in journal.items():
-            tables[sid][r][c] = old
+            if sid == id(self):
+                self.gear, self.gear_progress, self._gear_active = old
+            else:
+                tables[sid][r][c] = old
 
     def _update(self, board, region, move_r, move_c, journal=None):
         """棋段区只重算受本手影响的方向，其他方向沿用上次同步后的档位。"""
@@ -385,6 +403,10 @@ class Search:
         self.zero_history = {BLACK: [], WHITE: []}
         self.zero_active = {BLACK: False, WHITE: False}
         self.gear = {BLACK: DEFAULT_GEAR, WHITE: DEFAULT_GEAR}
+        self.gear_progress = {BLACK: 0, WHITE: 0}
+        # 只有静态棋盘时没有历史动量，不为载入时已经存在的威胁追补积分。
+        self._gear_active = {p: frozenset(self._gear_threats(board, p))
+                             for p in (BLACK, WHITE)}
 
     def _direction_level(self, board, r, c, player, dr, dc):
         """单方向档位（0 五连 … 5 无）：等价于「analyze_direction 的记录取
@@ -509,7 +531,7 @@ class Search:
         w_vcf/b_vcf   : 白/黑 VCF     —— live4(活四)+d44(双眠四)+d34(眠四+活三)
                                          白侧直下；黑侧反推堵点后进深推
         w_d33/b_d33   : 白/黑双三点   —— 两个活三叠加，必杀级
-        说明：活三（a2 系）是威胁(1)非必杀 → 不进检测优先级，归 fallback(3攻2防) 处理。
+        说明：活三（a2 系）是威胁(1)非必杀 → 不进检测优先级，由普通五档候选处理。
         """
         def pts(state, ids):
             return [(r, c) for r in range(SIZE) for c in range(SIZE)
@@ -782,6 +804,95 @@ class Search:
 
     # ---------- 动态攻防配比 ----------
 
+    def _gear_context(self):
+        """同盘面不同历史进度会产生不同候选；黑白由同一份状态对称派生。"""
+        return (self.gear[BLACK], self.gear[WHITE],
+                self.gear_progress[BLACK], self.gear_progress[WHITE])
+
+    def _advance_gear_progress(self, player, points):
+        """制造威胁者向进攻档推进；满100切档留余数，边界不囤同向积分。"""
+        gear = self.gear[player]
+        progress = self.gear_progress[player] + points
+        while progress >= GEAR_PROGRESS_LIMIT and gear < 5:
+            progress -= GEAR_PROGRESS_LIMIT
+            gear += 1
+        while progress <= -GEAR_PROGRESS_LIMIT and gear > 1:
+            progress += GEAR_PROGRESS_LIMIT
+            gear -= 1
+        if gear == 5 and progress > 0 or gear == 1 and progress < 0:
+            progress = 0
+        self.gear[player], self.gear[3-player] = gear, 6-gear
+        self.gear_progress[player], self.gear_progress[3-player] = progress, -progress
+
+    def _gear_line_support(self, board, r, c, player, axis, parent):
+        """用同一批实际棋子标识同线威胁，不把活三两端计成两份。"""
+        dr, dc = DIRECTIONS[axis]
+        board[r][c] = player
+        try:
+            records = self.pattern.analyze_direction(board, r, c, player, dr, dc)
+            supports = []
+            for rec in records:
+                if rec['parent'] != parent:
+                    continue
+                stones = tuple((r+k*dr, c+k*dc)
+                    for k in range(-rec['l_edge'][0]+1, rec['r_edge'][0])
+                    if k and in_board(r+k*dr, c+k*dc)
+                    and board[r+k*dr][c+k*dc] == player)
+                if stones:
+                    supports.append((axis, stones))
+            return supports
+        finally:
+            board[r][c] = EMPTY
+
+    def _gear_threats(self, board, player):
+        """仅提取0..4档新威胁身份；不改战术候选或五态。
+
+        单线按方向/实际支撑子去重，复合按中心计一次并吸收其组成线。
+        已有活四/成五不累计；复合中心只是潜在杀势，不冒充硬胜证明。
+        """
+        state = self.sb if player == BLACK else self.sw
+        singles, compounds, covered = {}, {}, set()
+        for r in range(SIZE):
+            for c in range(SIZE):
+                grade = state[r][c]
+                if board[r][c] != EMPTY or grade not in GEAR_THREAT_POINTS:
+                    continue
+                levels = self._direction_levels[player][r*SIZE+c]
+                if grade in (0, 1):
+                    level, parent = (0, 'FIVE') if grade == 0 else (1, 'LIVE4')
+                    for axis, value in enumerate(levels):
+                        if value != level:
+                            continue
+                        for line in self._gear_line_support(board, r, c, player, axis, parent):
+                            if len(line[1]) == (4 if grade == 0 else 3):
+                                singles.setdefault((grade, line), set()).add((r, c))
+                else:
+                    parts = set()
+                    for axis, value in enumerate(levels):
+                        if value in (2, 3):
+                            parent = 'SLEEP4' if value == 2 else 'LIVE3'
+                            parts.update(self._gear_line_support(board, r, c, player, axis, parent))
+                    compounds[(grade, r, c)] = GEAR_THREAT_POINTS[grade]
+                    covered.update(parts)
+        events = dict(compounds)
+        for (grade, line), points in singles.items():
+            # 同一组四子有两个成五端点即已有活四，不参与档位进度。
+            if grade == 0 and len(points) >= 2 or line in covered:
+                continue
+            events[(grade, line)] = GEAR_THREAT_POINTS[grade]
+        return events
+
+    def _record_gear_threats(self, board, mover):
+        current = {p: self._gear_threats(board, p) for p in (BLACK, WHITE)}
+        # 只奖励本手主动形成的新增威胁；持续存在、对方自己放弃防守不追补。
+        points = sum(value for key, value in current[mover].items()
+                     if key not in self._gear_active[mover])
+        self._advance_gear_progress(mover, points)
+        self._gear_active = {p: frozenset(events) for p, events in current.items()}
+
+    def _ordinary_gear(self, player):
+        return self.gear[player] if GEAR_ENABLED else DEFAULT_GEAR
+
     def _count_subclasses(self, board, state, ids):
         """统计状态表中属于 ids 子类集合的空位点数。"""
         cnt = 0
@@ -950,12 +1061,9 @@ class Search:
         return ('pat', self._pattern_sig(board, r, c, player))
 
     def _ordinary_candidates(self, board, player=WHITE, with_score=False):
-        """根层与深推共用普通候选策略；当前固定2攻2防、最多4点。
-
-        候选排序、去重和权重沿用同一套实现。以后动态配比从此统一接入，
-        不由根层与递归分别决定名额，也不在模拟期间更新真实攻防档位。
-        """
-        return self._fallback_by_count(board, 2, 2, player, with_score)
+        """根层/深推共用五档进度策略，普通池最多4点；不影响战术优先级。"""
+        attack_n, defend_n = ORDINARY_GEAR_PROFILE[self._ordinary_gear(player)]
+        return self._fallback_by_count(board, attack_n, defend_n, player, with_score)
 
     def _fallback(self, board, gear=None, player=WHITE, with_score=False):
         """兜底候选（无必杀时）：默认 3 攻 + 2 防 = 5 个点，保证不重复。
@@ -977,6 +1085,8 @@ class Search:
         """按明确攻防名额生成候选；共用原评分、去重、顺序和权重语义。"""
         syms = self._board_symmetries(board)
         def top_pts(state, player, n, mode, exclude=()):
+            if n <= 0:
+                return []
             pts = [(r, c) for r in range(SIZE) for c in range(SIZE)
                    if board[r][c] == EMPTY and (r, c) not in exclude
                    and SUBCLASS_PARENT[state[r][c]] in (THREAT, POTEN)]

@@ -217,11 +217,11 @@ class UnifiedProofSearchTest(unittest.TestCase):
         d._cold_temperature=80.
         d._begin_search_cache(empty_board(),False)
         self.assertEqual(d._initial_temperature(),80.)
-        self.assertEqual(d._cache_credit,160.)
+        self.assertEqual(d._cache_credit,64.)
         value,blocked=d._continuation_temperature(dict(state=0,path_weight=1.,depth=0,
-                                    temperature=-150.,score=0.,extension_state=(0,0,0)))
+                                    temperature=-150.,score=0.,extension_state=(0,0,0)), depth=0)
         self.assertFalse(blocked)
-        self.assertEqual(value,18.)
+        self.assertEqual(value,-86.)
 
 
 if __name__=='__main__':

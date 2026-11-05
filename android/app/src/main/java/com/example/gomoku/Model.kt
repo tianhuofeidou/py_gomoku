@@ -5,8 +5,6 @@ import org.json.JSONObject
 
 data class Move(val r: Int, val c: Int, val player: Int)
 
-data class GearLevel(val name: String, val t0: Int, val note: String)
-
 data class GameUiState(
     val board: List<Int> = List(225) { 0 },
     val moves: List<Move> = emptyList(),
@@ -23,8 +21,6 @@ data class GameUiState(
     val thinking: Boolean = false,
     val thinkingSeconds: Double = 0.0,
     val lastAiSeconds: Double? = null,
-    val gear: Int = 160,
-    val gearLevels: List<GearLevel> = emptyList(),
     val busy: Boolean = false,
     val error: String? = null,
 )
@@ -86,17 +82,7 @@ fun JSONObject.toGameUiState(): GameUiState {
         turn = optString("turn", "human"),
         result = if (isNull("result")) null else optString("result"),
         summary = optString("summary", ""),
-        gear = optInt("gear", 160),
     )
-}
-
-fun JSONArray.toGearLevels(): List<GearLevel> {
-    val out = ArrayList<GearLevel>()
-    for (i in 0 until length()) {
-        val item = optJSONObject(i) ?: continue
-        out.add(GearLevel(item.optString("name"), item.optInt("t0", 160), item.optString("note")))
-    }
-    return out
 }
 
 fun JSONObject.toMemoryUiState(): MemoryUiState {

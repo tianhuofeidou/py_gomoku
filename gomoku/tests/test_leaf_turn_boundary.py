@@ -3,8 +3,10 @@
 import copy
 import types
 import unittest
+from unittest.mock import patch
 
 from gomoku.core.engine import Engine
+from gomoku.core.deep_search import DeepSearch
 from gomoku.core.utils import BLACK, WHITE, empty_board
 from gomoku.tests.test_four_with_outer_gap import TPTC_PREFIX, point
 
@@ -29,6 +31,12 @@ def capture_leaves(deep):
 
 
 class LeafTurnBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        # 验证耗尽边界本身；根最低深度豁免由test_min_search_depth覆盖。
+        setting = patch.object(DeepSearch, 'MIN_SEARCH_PLIES', 0)
+        setting.start()
+        self.addCleanup(setting.stop)
+
     def test_root_budget_used_by_own_move_stops_before_opponent(self):
         for player in (BLACK, WHITE):
             with self.subTest(player=player):
@@ -48,7 +56,8 @@ class LeafTurnBoundaryTest(unittest.TestCase):
             for complete in (False, True):
                 with self.subTest(defender=defender, complete=complete):
                     engine = Engine()
-                    engine.deep_search.T0 = 160
+                    # 夹具目标是“战术应手后耗尽”；普通最小扣温为3，入口1确保触达。
+                    engine.deep_search.T0 = 1
                     board = empty_board()
                     for i, label in enumerate(TPTC_PREFIX):
                         r, c = point(label)

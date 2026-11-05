@@ -16,6 +16,9 @@ class StateBackpropTest(unittest.TestCase):
         engine = Engine()
         deep = engine.deep_search
         deep.T0 = 20.0
+        deep.MIN_SEARCH_PLIES = 0
+        # 合成状态树预算按每手3温度设计，实际棋型的扣温不属于本夹具。
+        deep._pattern_temperature_weight = lambda *args: 100.0
         board = empty_board()
         before = copy.deepcopy((board, engine.search.sb, engine.search.sw,
                                 engine.search.gear, engine.search.zero_history))
@@ -129,19 +132,20 @@ class StateBackpropTest(unittest.TestCase):
             self.assertEqual(ranked[0]['state'], D.STATE_LOSE if all_lose else D.STATE_NONE)
             self.assertEqual(board, empty_board())
 
-    def test_direct_five_and_unsearched_block_have_consistent_state_fields(self):
+    def test_direct_five_and_searched_block_have_consistent_state_fields(self):
         for player in (BLACK, WHITE):
             engine = Engine()
             board = empty_board()
             for r, c in [(7, 3), (7, 4), (7, 5), (7, 6)]:
                 board[r][c] = player
                 engine.on_move(board, r, c, player)
-            for turn, expected in ((player, D.STATE_WIN), (3-player, D.STATE_NONE)):
+            # 双端成五点无法一手全堵；堵五续推后必须回传硬败，不再返回占位分。
+            for turn, expected in ((player, D.STATE_WIN), (3-player, D.STATE_LOSE)):
                 result = engine.analyze_turn(board, turn)['part4_result']['ranked'][0]
                 self.assertEqual(result['state'], expected)
                 self.assertEqual(result['forced'], D._state_forced(expected))
                 self.assertEqual(result['child_state'], 'none')
-                self.assertEqual(result['score'], 1000. if expected == D.STATE_WIN else 1e9)
+                self.assertEqual(result['score'], 1000. if expected == D.STATE_WIN else -1000.)
 
     def test_depth_five_hard_results_match_independent_minimax(self):
         def combine_tree(leaves):

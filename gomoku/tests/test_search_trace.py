@@ -88,7 +88,7 @@ class TraceTest(unittest.TestCase):
             if event['kind'] == 'temperature':
                 before_count = event['tactical_count']-int(event['tactical'])
                 expected_cost = traced.deep_search._path_temperature_cost(
-                    event['weight'], event['tactical'], before_count,
+                    event['cost_weight'], event['tactical'], before_count,
                     event['temperature_before'])
                 self.assertAlmostEqual(event['cost'], expected_cost)
 
@@ -129,15 +129,17 @@ class TraceTest(unittest.TestCase):
         ds._cache_credit = 80.
         node['frontier'] = dict(player=1, temperature=-15., path_weight=.5, epoch=7,
             before_move=True, depth=4, score=120., state=0, terminal=False, tactical_count=5)
-        expected, blocked = ds._continuation_temperature(node['frontier'])
-        first = ds._resume_temperature(node, 1, -15., before_move=True)
-        second = ds._resume_temperature(node, 1, -15., before_move=True)
+        expected, blocked = ds._continuation_temperature(node['frontier'], depth=4)
+        first = ds._resume_temperature(node, 1, -15., depth=4, before_move=True)
+        second = ds._resume_temperature(node, 1, -15., depth=4, before_move=True)
         self.assertEqual((first, second), (expected, expected))
         resumes = [e for e in events if e['kind']=='resume']
         self.assertEqual(len(resumes), 1)
         self.assertEqual(resumes[0]['old_temperature'], -15.)
         self.assertEqual(resumes[0]['temperature'], expected)
-        self.assertEqual(resumes[0]['round_t0'], 80.)
+        self.assertEqual(resumes[0]['round_t0'], ds.T0)
+        self.assertEqual(resumes[0]['continuation_base'], 80.)
+        self.assertEqual(resumes[0]['current_depth'], 4)
         self.assertEqual(resumes[0]['blocked'], blocked)
 
     def test_hard_cached_result_is_reused_without_expansion(self):

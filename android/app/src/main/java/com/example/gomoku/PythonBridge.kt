@@ -2,7 +2,6 @@ package com.example.gomoku
 
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
-import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -31,8 +30,4 @@ object PythonBridge {
     fun draw(): JSONObject = JSONObject(module.callAttr("draw").toString())
 
     fun memory(): JSONObject = JSONObject(module.callAttr("memory").toString())
-
-    fun gearLevels(): JSONArray = JSONArray(module.callAttr("gear_levels").toString())
-
-    fun setGear(t0: Int): JSONObject = JSONObject(module.callAttr("set_gear", t0).toString())
 }

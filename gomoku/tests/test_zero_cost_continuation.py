@@ -159,7 +159,7 @@ class ZeroCostContinuationTest(unittest.TestCase):
                         self.assertEqual(leaf['delta'], expected)
                         self.assertEqual(deep._dt(100.0), 3.0)
                         if expected == 2:
-                            self.assertEqual(leaf['contexts'][-1]['temp'], -2.0)
+                            self.assertEqual(leaf['contexts'][-1]['temp'], 1.0-deep._dt(0.0))
 
     def test_cache_and_score_modes_use_current_board_when_opponent_just_moved(self):
         for side in (BLACK, WHITE):
@@ -285,16 +285,16 @@ class ZeroCostContinuationTest(unittest.TestCase):
                 deep._tree_epoch = 0
                 deep._remember_frontier(node, side, -61.22, 1.0, before_move=phase)
                 self.assertEqual(deep._resume_temperature(node, side, -7.0,
-                                                         before_move=phase), -7.0)
+                                                         before_move=phase, depth=0), -7.0)
                 deep._tree_epoch = 1
                 self.assertEqual(deep._resume_temperature(node, side, -7.0,
-                                                         before_move=not phase), -7.0)
+                                                         before_move=not phase, depth=0), -7.0)
                 self.assertEqual(deep._resume_temperature(node, 3-side, -7.0,
-                                                         before_move=phase), -7.0)
+                                                         before_move=phase, depth=0), -7.0)
                 self.assertAlmostEqual(deep._resume_temperature(node, side, -7.0,
-                                                               before_move=phase), 40.0)
+                                                               before_move=phase, depth=0), 2.78)
                 self.assertAlmostEqual(deep._resume_temperature(node, side, 999.0,
-                                                               before_move=phase), 40.0)
+                                                               before_move=phase, depth=0), 2.78)
         self.assertEqual(deep.cache_stats['frontier_resumes'], 4)
 
     def test_real_reroot_resumes_before_move_frontier_with_debt(self):
@@ -302,7 +302,7 @@ class ZeroCostContinuationTest(unittest.TestCase):
             board = empty_board()
             search = Search(PatternAnalyzer())
             deep = DeepSearch(search)
-            deep.T0 = 160.0
+            deep.T0 = 1.0  # 建立仍欠温超过64的真实末端，验证拨温不会抹掉欠温。
 
             def tactical(b, p):
                 if b[A[0]][A[1]] == side and b[O[0]][O[1]] == EMPTY and p == 3-side:
@@ -312,28 +312,26 @@ class ZeroCostContinuationTest(unittest.TestCase):
             with patch.object(search, 'tactical_candidates', side_effect=tactical), \
                  patch.object(search, '_fallback', return_value=[(*A, 1.0)]):
                 deep.rank_candidates(board, {A: 1.0}, side, complete_scores=True)
-                debt = 160.0-deep._dt(1.0)
+                debt = 1.0-deep._dt(0.0)
                 for r, c, p in ((*A, side), (*O, 3-side)):
                     board[r][c] = p
                     search.on_move(board, r, c, p)
                     deep.advance_search_cache(board, r, c, p)
                 self.assertTrue(deep._tree_root['frontier']['before_move'])
                 self.assertEqual(deep._tree_root['frontier']['temperature'], debt)
-                # 当前策略对达到深度上限的旧叶子禁止续推，保留本测试对普通补步
-                # 禁止与状态回滚的覆盖范围。
-                deep._tree_root['frontier']['depth'] = deep.CONTINUE_DEPTH_STOP
+                # 换根后按当前深度0拨入64，旧深度不构成硬停止条件。
                 before = snapshot(board, search)
                 with patch.object(search, 'on_move', side_effect=AssertionError('欠温未清不得补普通步')):
                     deep.rank_candidates(board, {B: 100.0}, side, complete_scores=True)
                     self.assertEqual(deep.cache_stats['frontier_resumes'], 1)
-                    self.assertEqual(deep._tree_root['frontier']['temperature'], debt)
-                    self.assertEqual(deep._tree_root['resume_values'][(side, True)], 0.0)
-                    self.assertTrue(deep._tree_root['resume_blocked'])
+                    self.assertEqual(deep._tree_root['frontier']['temperature'], debt+64.)
+                    self.assertEqual(deep._tree_root['resume_values'][(side, True)], debt+64.)
+                    self.assertFalse(deep._tree_root['resume_blocked'])
                     deep.rank_candidates(board, {B: 100.0}, side, complete_scores=True)
                     self.assertEqual(deep.cache_stats['frontier_resumes'], 0)
-                    self.assertEqual(deep._tree_root['frontier']['temperature'], debt)
-                    self.assertEqual(deep._tree_root['resume_values'][(side, True)], 0.0)
-                    self.assertTrue(deep._tree_root['resume_blocked'])
+                    self.assertEqual(deep._tree_root['frontier']['temperature'], debt+64.)
+                    self.assertEqual(deep._tree_root['resume_values'][(side, True)], debt+64.)
+                    self.assertFalse(deep._tree_root['resume_blocked'])
                 self.assertEqual(snapshot(board, search), before)
 
 

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""普通候选固定 4 点（2 攻 2 防）的发布回归。
+"""普通候选最多4点；均衡档2攻2防，递归按五档进度分配。
 
 覆盖：
 1. 黑白对称；
 2. 保留两个防守点，不把 4 点截成纯攻点；
 3. 原始权重与顺序；
-4. 根层与内部都使用同一套 2攻2防；
+4. 根层与内部都使用同一套五档配额；
 5. 各内部深度最多 4 点；
 6. 战术候选不受 4 点限制；
 7. 根层/内部普通候选缓存键隔离；
@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from gomoku.core.utils import empty_board, place, BLACK, WHITE, SIZE
 from gomoku.core.pattern import PatternAnalyzer
-from gomoku.core.search import Search
+from gomoku.core.search import Search, ORDINARY_GEAR_PROFILE
 from gomoku.core.deep_search import DeepSearch
 from gomoku.core.engine import Engine
 
@@ -126,7 +126,7 @@ class InternalCandidateWidthTest(unittest.TestCase):
                 self.assertEqual(got, expected)
                 self.assertLessEqual(len(got), 4)
 
-    def test_actual_recursion_uses_two_attack_two_defense(self):
+    def test_actual_recursion_uses_current_five_gear_quota(self):
         stones = [(7, 7, BLACK), (7, 6, WHITE), (6, 6, BLACK),
                   (6, 7, WHITE), (5, 8, BLACK), (8, 5, WHITE)]
         e, board = replay(stones)
@@ -135,7 +135,8 @@ class InternalCandidateWidthTest(unittest.TestCase):
 
         def record_fb(self, b, attack_n, defend_n, player=WHITE, with_score=False):
             out = orig_fb(self, b, attack_n, defend_n, player, with_score)
-            fallback_calls.append((attack_n, defend_n, len(out)))
+            fallback_calls.append((attack_n, defend_n, len(out),
+                                   ORDINARY_GEAR_PROFILE[self._ordinary_gear(player)]))
             return out
 
         plies_seen = []
@@ -154,8 +155,9 @@ class InternalCandidateWidthTest(unittest.TestCase):
         self.assertTrue(rows)
         internal_calls = [c for c in fallback_calls if c[:2] == (2, 2)]
         self.assertTrue(internal_calls, '真实递归未出现2攻2防普通候选')
-        for attack_n, defend_n, n in fallback_calls:
-            self.assertEqual((attack_n, defend_n), (2, 2))
+        for attack_n, defend_n, n, expected in fallback_calls:
+            self.assertEqual((attack_n, defend_n), expected)
+            self.assertEqual(attack_n + defend_n, 4)
             self.assertLessEqual(n, 4)
         self.assertTrue(any(p > 0 for p in plies_seen))
         self.assertGreaterEqual(max(plies_seen), 2, '应到达多个内部深度')
@@ -172,7 +174,7 @@ class InternalCandidateWidthTest(unittest.TestCase):
         self.assertEqual(len(root), 8)
 
     def test_root_and_internal_candidate_cache_shared(self):
-        """根层与内部使用同一固定4点候选，同一盘面按行棋方共享候选缓存。"""
+        """同盘面、行棋方与档位上下文相同，根层/内部共享候选缓存。"""
         e, board = replay(SYM_STONES)
         d = e.deep_search
         try:
@@ -182,7 +184,7 @@ class InternalCandidateWidthTest(unittest.TestCase):
             self.assertEqual(len(internal), 4)
             self.assertEqual(len(root), 4)
             keys = set(d._tree_root['candidates'].keys())
-            self.assertEqual(keys, {BLACK})
+            self.assertEqual(keys, {(BLACK, e.search._gear_context())})
             base = d.cache_stats['candidate_hits']
             self.assertEqual(d._candidate_points(board, BLACK, 5, plies=1), internal)
             self.assertEqual(d._candidate_points(board, BLACK, 5, plies=0), root)

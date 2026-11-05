@@ -26,15 +26,6 @@ WHITE = 2
 EMPTY = 0
 SIZE = 15
 
-# 与桌面 play.py 的 TEMP_LEVELS 保持一致：玩家语言，不暴露温度概念。
-# 移动端初始为“标准”（T0=160），可在 UI 切换，下一手生效。
-GEAR_LEVELS = [
-    ('轻快', 80, '约 0.3s/手'),
-    ('标准', 160, '约 3s/手（复杂局面可达 17s）'),
-    ('认真', 240, '约 15s/手（复杂局面可达 97s）'),
-]
-_DEFAULT_GEAR = 160.0
-
 
 def _dump(obj):
     return json.dumps(obj, ensure_ascii=False)
@@ -47,8 +38,7 @@ class AndroidSession:
 
     def __init__(self):
         self.engine = _service_mod.create_engine()
-        # 使用实例属性而不是 DeepSearch.T0 类属性，避免未来多会话互相影响。
-        self.engine.deep_search.T0 = _DEFAULT_GEAR
+        # 旗舰参数由核心类默认提供；界面不得再覆盖温度预算。
         # game_of 在无存档时会创建默认 Game，这里补一次落盘，之后每次
         # 落子/结算都由 Game.persist 保存到 App 私有目录。
         loaded = _game_mod.game_of(self.SID)
@@ -152,7 +142,6 @@ def _state():
         'turn': 'human' if current == human else 'ai',
         'result': _result_of(g.winner, human),
         'summary': _summary(),
-        'gear': float(getattr(_session.engine.deep_search, 'T0', _DEFAULT_GEAR)),
     }
 
 
@@ -265,26 +254,3 @@ def draw():
 
 def memory():
     return _dump(_memory())
-
-
-def gear_levels():
-    """返回可选棋力档位（名称、T0、玩家可读说明）。"""
-    return _dump([
-        {'name': name, 't0': t0, 'note': note}
-        for (name, t0, note) in GEAR_LEVELS
-    ])
-
-
-def set_gear(t0):
-    """切换 AI 棋力档位；下一手生效，并返回最新状态。"""
-    if _session is None:
-        return _dump({'ok': False, 'error': '尚未初始化', 'state': None})
-    try:
-        value = float(t0)
-    except (TypeError, ValueError):
-        return _dump({'ok': False, 'error': '非法棋力档位', 'state': _state()})
-    allowed = [item[1] for item in GEAR_LEVELS]
-    if value not in allowed:
-        return _dump({'ok': False, 'error': '不支持的棋力档位', 'state': _state()})
-    _session.engine.deep_search.T0 = value
-    return _dump({'ok': True, 'state': _state()})

@@ -1,6 +1,5 @@
 package com.example.gomoku
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -56,7 +54,6 @@ fun GomokuApp(viewModel: GomokuViewModel = viewModel()) {
             onResign = viewModel::resign,
             onDraw = viewModel::draw,
             onNewGame = viewModel::newGame,
-            onSetGear = viewModel::setGear,
             onMemory = {
                 screen = "memory"
                 viewModel.refreshMemory()
@@ -74,12 +71,10 @@ private fun BoardScreen(
     onResign: () -> Unit,
     onDraw: () -> Unit,
     onNewGame: (Boolean) -> Unit,
-    onSetGear: (Int) -> Unit,
     onMemory: () -> Unit,
     onClearError: () -> Unit,
 ) {
     var showNewGame by remember { mutableStateOf(false) }
-    var showGear by remember { mutableStateOf(false) }
     var showResign by remember { mutableStateOf(false) }
     var showDraw by remember { mutableStateOf(false) }
     var resultDismissed by remember { mutableStateOf(false) }
@@ -106,7 +101,6 @@ private fun BoardScreen(
         ) {
             HeaderRow(
                 enabled = !state.thinking && !state.busy,
-                onGear = { showGear = true },
                 onMemory = onMemory,
                 onNewGame = { showNewGame = true },
             )
@@ -154,16 +148,6 @@ private fun BoardScreen(
             },
         )
     }
-    if (showGear) {
-        GearDialog(
-            state = state,
-            onSelect = { t0 ->
-                showGear = false
-                onSetGear(t0)
-            },
-            onDismiss = { showGear = false },
-        )
-    }
     if (showResign) {
         ConfirmDialog(
             title = "确认认输？",
@@ -203,7 +187,6 @@ private fun BoardScreen(
 @Composable
 private fun HeaderRow(
     enabled: Boolean,
-    onGear: () -> Unit,
     onMemory: () -> Unit,
     onNewGame: () -> Unit,
 ) {
@@ -218,7 +201,6 @@ private fun HeaderRow(
             maxLines = 1,
             modifier = Modifier.weight(1f),
         )
-        TextButton(onClick = onGear, enabled = enabled) { Text("棋力") }
         TextButton(onClick = onMemory) { Text("记忆") }
         TextButton(onClick = onNewGame, enabled = enabled) { Text("新局") }
     }
@@ -273,7 +255,7 @@ private fun StatusCard(state: GameUiState) {
                     contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                 ) {
                     Text(
-                        text = "AI ${gearName(state)}",
+                        text = "AI：旗舰",
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         style = MaterialTheme.typography.labelMedium,
                     )
@@ -342,59 +324,6 @@ private fun ResultDialog(result: String?, onNewGame: () -> Unit, onDismiss: () -
         dismissButton = { TextButton(onClick = onDismiss) { Text("看看棋盘") } },
     )
 }
-
-@Composable
-private fun GearDialog(
-    state: GameUiState,
-    onSelect: (Int) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("AI 棋力") },
-        text = {
-            Column {
-                state.gearLevels.forEach { level ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelect(level.t0) }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(
-                            selected = state.gear == level.t0,
-                            onClick = { onSelect(level.t0) },
-                        )
-                        Column(Modifier.padding(start = 4.dp)) {
-                            Text(level.name, style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                text = level.note,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                Text(
-                    text = "切换后从 AI 的下一手开始生效。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "棋逢小鲸 v${BuildConfig.VERSION_NAME}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
-}
-
-private fun gearName(state: GameUiState): String =
-    state.gearLevels.firstOrNull { it.t0 == state.gear }?.name ?: "标准"
 
 private fun resultText(result: String?): String = when (result) {
     "human_win" -> "你赢了"

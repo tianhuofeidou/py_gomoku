@@ -22,29 +22,15 @@ from tkinter import ttk
 from gomoku.game import Game, SIZE, EMPTY, BLACK, WHITE, COLUMNS
 from gomoku import service, memory
 from gomoku.session import PlaySession
-from gomoku.core.deep_search import DeepSearch
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.13.0'
+APP_TITLE = '棋逢小鲸 v1.14.0'
 
 
 def _resource_path(relative_path):
     """返回源码运行或 PyInstaller 打包后的资源绝对路径。"""
     base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_dir, relative_path)
-
-# AI 棋力档位：(名称, 温度预算 T0, 说明)——玩家语言，不暴露温度概念
-# 本机实测（24 个 KataGo 中盘开局，纯算法，含剪枝，单步决策）：
-#   80→avg 0.30s(最慢 1.2s) / 160→avg 3.08s(最慢 17.2s) / 240→avg 15.2s(最慢 97.1s)。
-# 旧记录（80→0.17s / 160→2.2s / 240→10s）来自更快的环境，本机不可复现：
-# 同机、同局面集、同 T0=80 的改前实测为 avg 0.38s，即本机比旧记录环境慢约 2 倍；
-# 同机对照下 v1.4.2 把单步耗时降到约 0.79 倍（两局面 min-of-7 对照为 0.63 倍）。
-TEMP_LEVELS = [
-    ('轻快', 80, '约 0.3s/手'),
-    ('标准', 160, '约 3s/手（复杂局面可达 17s）'),
-    ('认真', 240, '约 15s/手（复杂局面可达 97s）'),
-]
-
 
 class GomokuApp:
     CELL = 34
@@ -110,25 +96,18 @@ class GomokuApp:
         ttk.Button(record_buttons, text='棋谱复盘', command=self._open_replay).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
-        # AI 棋力档位（温度银行预算映射；越高推演越深越慢，下一手生效）
-        ttk.Label(panel, text='AI 棋力').grid(row=17, column=0, sticky='w', pady=(10, 2))
-        cur = DeepSearch.T0
-        self.temp_var = tk.IntVar(value=min(TEMP_LEVELS, key=lambda x: abs(x[1] - cur))[1])
-        for i, (name, t0, note) in enumerate(TEMP_LEVELS):
-            ttk.Radiobutton(panel, text='%s（%s）' % (name, note), value=t0,
-                            variable=self.temp_var,
-                            command=self._on_temp_change).grid(row=18 + i, column=0, sticky='w')
-
-        ttk.Separator(panel, orient='horizontal').grid(row=21, column=0, sticky='ew', pady=(8, 5))
+        # 界面沿用核心旗舰默认，不在入口另设温度或过期耗时承诺。
+        ttk.Label(panel, text='AI：旗舰').grid(row=17, column=0, sticky='w', pady=(10, 2))
+        ttk.Separator(panel, orient='horizontal').grid(row=18, column=0, sticky='ew', pady=(8, 5))
         self.leaf_eval_var = tk.StringVar(value='叶子评估：尚未触发')
         self.decision_eval_var = tk.StringVar(value='决策选点：纯算法')
         ttk.Label(panel, textvariable=self.leaf_eval_var, justify=tk.LEFT,
-                  wraplength=210).grid(row=22, column=0, sticky='w')
+                  wraplength=210).grid(row=19, column=0, sticky='w')
         ttk.Label(panel, textvariable=self.decision_eval_var, justify=tk.LEFT,
-                  wraplength=210).grid(row=23, column=0, sticky='w')
+                  wraplength=210).grid(row=20, column=0, sticky='w')
 
         self.turn_label = ttk.Label(panel, text='', justify=tk.LEFT, wraplength=210)
-        self.turn_label.grid(row=24, column=0, sticky='w', pady=8)
+        self.turn_label.grid(row=21, column=0, sticky='w', pady=8)
 
         # 宽度按最长候选行预留，保证“序号 + 坐标 + 分数 + 选中/必胜标记”单行显示。
         self.info = tk.Text(self.root, width=50, height=26, state=tk.DISABLED)
@@ -504,11 +483,6 @@ class GomokuApp:
     def _on_mode_change(self):
         hp = BLACK if self.hcolor_var.get() == 'black' else WHITE
         self._new_game(mode=self.mode_var.get(), human_player=hp)
-
-    # ---------- AI 棋力档位 ----------
-    def _on_temp_change(self):
-        """档位切换：更新温度银行预算（下一手生效）。"""
-        DeepSearch.T0 = float(self.temp_var.get())
 
     # ---------- 刷新 ----------
     def _log(self, text):

@@ -54,8 +54,8 @@ def parse_coord(tok):
 def fmt_score(score, opening=False):
     """候选分展示。
 
-    1e9 是"不深推、直接采用"的约定值：开局谱着和战术直取都会拿到它，但两者的
-    含义完全不同——谱着只是定式着法，不是必胜手，所以分开显示，避免玩家误读。
+    谱着和非终局堵点已进入搜索，显示真实评分。保留旧1e9占位值的展示兼容，
+    不把历史谱着占位值显示成必胜结论。
     """
     if score is None:
         return '未补算'
@@ -99,7 +99,7 @@ def ai_turn(s):
     (r, c), ranked, net_used = out
     source = s.engine.opening_source
     label = service.decision_source_label(source)
-    # 开局直取：谱着不是必胜手，分数按"谱着"显示。
+    # 来源独立于评分；当前谱着显示真实搜索分，旧占位值仍按谱着标签兼容。
     opening = source in ('book', 'rules')
     print('AI 落子 %s%d' % (COLUMNS[c], r + 1))
     print('  决策：%s · 叶子：%s · 用时 %.1fs' % (
