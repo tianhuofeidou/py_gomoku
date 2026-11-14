@@ -80,15 +80,15 @@ class SearchCacheTest(unittest.TestCase):
 
     # ---------- 候选上限 ----------
 
-    def test_root_and_internal_two_attack_two_defense_at_all_depths(self):
+    def test_root_and_internal_share_d_policy_at_all_depths(self):
         engine, board = build(GAME[:4])
         deep = engine.deep_search
         for player in (BLACK, WHITE):
             self.assertFalse(deep._tactical_result(board, player)[0])
             root = deep._candidate_points(board, player, 5, plies=0)
-            expected_root = engine.search._fallback_by_count(board, 2, 2, player=player, with_score=True)
+            expected_root = engine.search._ordinary_candidates(board, player=player, with_score=True)
             expected_internal = expected_root
-            # 普通点现在按评分顺序搜索；配额仍先取2攻2防，不截旧5点表。
+            # 根与内部都读正式D入口；五档参与角色分配，不硬切2攻2防。
             clamp = lambda rows: sorted([(r, c, min(max(float(w), 1.0), 100.0))
                                   for r, c, w in rows], key=lambda row: -row[2])
             self.assertEqual(root, clamp(expected_root))

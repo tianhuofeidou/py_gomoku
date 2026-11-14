@@ -96,6 +96,8 @@ class ZeroCostContinuationTest(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(search, 'tactical_candidates', side_effect=tactical))
+            # 控制正式普通入口，避免D的真实初选把合成的单分支变成多分支。
+            stack.enter_context(patch.object(search, '_ordinary_candidates', side_effect=fallback))
             stack.enter_context(patch.object(search, '_fallback', side_effect=fallback))
             stack.enter_context(patch.object(search, '_fallback_by_count', side_effect=fallback))
             stack.enter_context(patch.object(search, 'on_move', side_effect=record))

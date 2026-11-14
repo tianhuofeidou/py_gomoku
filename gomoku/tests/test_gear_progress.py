@@ -132,8 +132,9 @@ class GearProgressTests(unittest.TestCase):
         deep._begin_search_cache(board, False)
         try:
             with patch.object(deep, '_tactical_result', return_value=(None, {})), \
-                    patch.object(search, '_fallback_by_count', side_effect=lambda b, a, d, p, w:
-                                 [(a, d, 50.0)]):
+                    patch.object(search, '_ordinary_candidates',
+                                 side_effect=lambda b, player, with_score:
+                                 [(*ORDINARY_GEAR_PROFILE[search._ordinary_gear(player)], 50.0)]):
                 old_key = deep._result_key(BLACK, BLACK, 10, 1)
                 first = deep._candidate_points(board, BLACK)
                 search._advance_gear_progress(BLACK, 100)

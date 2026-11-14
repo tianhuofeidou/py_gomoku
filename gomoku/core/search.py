@@ -187,7 +187,12 @@ ORDINARY_GEAR_PROFILE = {1: (0, 4), 2: (1, 3), 3: (2, 2), 4: (3, 1), 5: (4, 0)}
 GEAR_PROGRESS_LIMIT = 100
 # 状态表描述“下一空点落下后的棋型”：0对应已有冲四，1对应已有活三。
 GEAR_THREAT_POINTS = {0: 30, 1: 40, 2: 100, 3: 80, 4: 60}
-ORDINARY_POLICY = 'five-gears-new-threat-progress-v1'
+# 普通候选D参数：仅精筛加权，纯棋型耗温仍读取原TYPE_SCORE。
+ORDINARY_POOL_SIDE = 8
+ORDINARY_A1_MULT = 1.2
+ORDINARY_A2_MULT = 1.2
+ORDINARY_POTENTIAL_WEIGHT = 30.0
+ORDINARY_POLICY = 'ordinary-d-p8-family12-p30-merged-v1'
 
 
 class SearchScope:
@@ -1061,14 +1066,15 @@ class Search:
         return ('pat', self._pattern_sig(board, r, c, player))
 
     def _ordinary_candidates(self, board, player=WHITE, with_score=False):
-        """根层/深推共用五档进度策略，普通池最多4点；不影响战术优先级。"""
-        attack_n, defend_n = ORDINARY_GEAR_PROFILE[self._ordinary_gear(player)]
-        return self._fallback_by_count(board, attack_n, defend_n, player, with_score)
+        """普通候选D：原生初选、局部潜力和合榜精筛，根层/递归最多4点。"""
+        from .ordinary_selector import select_candidates
+        points = select_candidates(self, board, player)
+        return points if with_score else [point[:2] for point in points]
 
     def _fallback(self, board, gear=None, player=WHITE, with_score=False):
         """兜底候选（无必杀时）：默认 3 攻 + 2 防 = 5 个点，保证不重复。
         传入 gear 时按档位取 (攻, 防) 配比；gear=None 保持固定 3攻2防。
-        深推内部的 2攻1防通过 _fallback_by_count 复用同一套评分和去重。
+        此接口保留原生评分和去重，供D的第一阶段初选复用。
 
         player 指定“进攻方”视角：
           - WHITE：白攻 TopN + 黑防 TopM（AI 执白的第一层候选）

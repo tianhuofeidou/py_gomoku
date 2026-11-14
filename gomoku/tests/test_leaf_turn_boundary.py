@@ -68,8 +68,15 @@ class LeafTurnBoundaryTest(unittest.TestCase):
                         engine.search._direction_levels, engine.search.gear,
                         engine.search.zero_history, engine.search.zero_active))
                     leaves = capture_leaves(engine.deep_search)
-                    engine.deep_search.rank_candidates(board, {point('H5'): 100}, defender,
-                                                       complete_scores=complete)
+                    def fixed_reply(b, player, with_score=False):
+                        # 冻结待测应手H4，隔离普通选点政策；若发生普通补手直接失败。
+                        self.assertEqual(player, 3 - defender)
+                        self.assertEqual(b[point('H4')[0]][point('H4')[1]], 0)
+                        return [(*point('H4'), 100)] if with_score else [point('H4')]
+
+                    with patch.object(engine.search, '_ordinary_candidates', side_effect=fixed_reply):
+                        engine.deep_search.rank_candidates(board, {point('H5'): 100}, defender,
+                                                           complete_scores=complete)
                     stale = [r for r in leaves if r['status'] == 'stale']
                     self.assertTrue(stale)
                     self.assertTrue(all(r['score_player'] == defender for r in stale))

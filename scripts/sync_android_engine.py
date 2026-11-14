@@ -44,6 +44,7 @@ CORE_FILES = (
     'utils.py',
     'pattern.py',
     'search.py',
+    'ordinary_selector.py',
     'deep_search.py',
     'opening_book.py',
     'opening_book_data.py',

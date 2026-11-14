@@ -24,7 +24,7 @@ from gomoku import service, memory
 from gomoku.session import PlaySession
 
 MODE_LABEL = {'ai': '人机', 'pvp': '人人', 'vs': '机机'}
-APP_TITLE = '棋逢小鲸 v1.14.0'
+APP_TITLE = '棋逢小鲸 v1.15.0'
 
 
 def _resource_path(relative_path):
